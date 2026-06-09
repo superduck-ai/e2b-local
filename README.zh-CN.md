@@ -1,0 +1,273 @@
+# e2b-local
+
+[English README](README.md)
+
+`e2b-local` 是一个用 Go 编写的本地 E2B 兼容 gateway。它接收 E2B SDK 的请求，并把 sandbox 跑在本地基础设施上：
+
+- Docker Engine API 管理的容器
+- OrbStack CLI 管理的 Linux VM
+
+HTTP 层尽量贴近 E2B OpenAPI schema；Docker 和 OrbStack 的具体行为放在独立 backend package 里。
+
+## 快速开始
+
+复制默认配置：
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+默认 runtime 是 Docker。启动 gateway：
+
+```bash
+go run ./cmd/e2b-local --config config.yaml
+```
+
+通过 CLI 创建 volume：
+
+```bash
+go run ./cmd/e2b-local volume create --config config.yaml test-volume
+```
+
+该命令会复用当前配置的 runtime，返回和 `POST /volumes` 一致的 JSON，例如：
+
+```json
+{"volumeID":"test-volume","name":"test-volume","token":"compat-volume-token-test-volume"}
+```
+
+## 当前状态
+
+已经实现的能力包括：
+
+- 基于 Gin 的 HTTP server 和 middleware。
+- 通过配置选择本地 runtime。
+- 根据 E2B OpenAPI schema 生成 request/response DTO、client type 和 server interface。
+- E2B sandbox 生命周期 API：create、list、get、kill、pause、resume、connect 和 logs。
+- Template、build、volume、snapshot 和 metrics resource endpoints。
+- Docker runtime：创建、暂停、恢复、删除、重启恢复、读取日志和采集容器 stats。
+- OrbStack runtime：clone/start/stop/delete VM，把 `envd` 安装为 systemd service，管理 volume mount，并用 `orb clone` 创建 snapshot。
+
+## 目录结构
+
+- `cmd/e2b-local`：CLI 入口，用于启动 gateway 和执行辅助命令。
+- `internal/gateway`：核心 gateway package，包括配置、路由、store、callback 和 runtime interface。
+- `internal/backends/docker`：Docker runtime 实现。
+- `internal/backends/orbstack`：OrbStack VM runtime 实现。
+- `internal/e2bapi`：生成的 OpenAPI client/server/DTO 代码。
+- `envd-bin`：随仓库管理的 Linux `envd` 二进制，供 Docker 和 OrbStack 使用。
+- `scripts`：本地 smoke test 和辅助脚本。
+- `tests/sdk_integration`：可选的 Go/JS SDK 集成测试。
+
+backend 通过 `RegisterSandboxRuntimeFactory` 注册，所以 runtime 逻辑不会混进 HTTP router。
+
+## 依赖
+
+- Go 1.24 或更新版本。
+- Docker 或 OrbStack，取决于选择的 runtime。
+- `envd-bin` 中对应架构的 Linux `envd` 二进制。
+
+仓库当前管理：
+
+- `envd-bin/envd-linux-amd64`
+- `envd-bin/envd-linux-arm64`
+
+Docker 会 inspect 选中镜像的架构，并把匹配的 `envd` 二进制 bind-mount 到每个 sandbox 容器的 `/usr/local/bin/envd`。OrbStack 会把配置的二进制复制到每个 sandbox VM，并在启动 systemd service 前安装为 `/usr/local/bin/envd`。
+
+## 配置
+
+完整本地配置见 `config.example.yaml`。Docker 专用样例见 `config.docker.yaml`，OrbStack 专用样例见 `config.orb.yaml`。
+
+一个精简 Docker 配置：
+
+```yaml
+server:
+  addr: "127.0.0.1:3000"
+
+runtime:
+  type: "docker"
+
+docker:
+  container_name_prefix: "e2b-envd-"
+  health_timeout_seconds: 30
+```
+
+重要字段：
+
+- `runtime.type` 只支持 `docker` 和 `orbstack`。
+- `docker.host` 可以省略。gateway 会依次使用 `DOCKER_HOST`、当前用户的 OrbStack socket，以及 `unix:///var/run/docker.sock`。
+- Docker templates 来自本机已有 tag 的 Docker images。gateway 不会自动 pull 镜像；请先在本机 pull、build 并打好 tag 再创建 sandbox。
+- `docker.platform` 是可选 override。留空时 Docker 自己选择镜像平台，gateway 再 inspect 选中的镜像。
+- `docker.envd_binary` 是可选 override。留空时 gateway 会按选中镜像架构自动选择 `envd-bin/envd-linux-amd64` 或 `envd-bin/envd-linux-arm64`；显式设置时支持相对配置文件路径。
+- `orbstack.envd_binary` 可以写相对路径，gateway 会先解析再复制进 VM。
+- `orbstack.volume_host_path` 存放 macOS 本地 volume 目录，并支持 `~` 和相对配置文件路径。
+
+## Docker envd 调试脚本
+
+如需单独启动一个 envd 容器做手动调试：
+
+```bash
+scripts/start-docker-envd.sh
+```
+
+默认值：
+
+- 镜像：`e2b-local/code-interpreter:latest`
+- standalone 调试容器 platform：`linux/amd64`
+- envd 二进制：根据 helper platform 从 `envd-bin` 里选择
+- 容器名：`e2b-envd`
+- 外部 URL：`http://127.0.0.1:49984`
+
+常用覆盖：
+
+```bash
+E2B_ENVD_HOST_PORT=49985 \
+E2B_ENVD_CONTAINER=e2b-envd-2 \
+scripts/start-docker-envd.sh
+```
+
+## Docker Runtime
+
+当你希望 gateway 为每个 sandbox 创建一个容器时，使用 Docker runtime：
+
+```yaml
+runtime:
+  type: "docker"
+```
+
+Docker runtime 下：
+
+- `POST /sandboxes` 会创建容器。
+- `DELETE /sandboxes/{sandboxID}` 会删除容器。
+- `pause` 和 `connect` 对应 Docker pause/unpause。
+- envd 在容器内固定监听 `49983`；Docker 会自动为每个 sandbox 分配独立的 localhost host port。
+- Template 会从本机已有 tag 的 Docker images 解析，也可以在 `templateID` 中直接传完整 image reference；对应镜像必须已经存在本机。
+- gateway 会把非敏感 runtime metadata 写入 `e2b.gateway.*` container label，进程重启后可恢复 running/paused sandbox。
+- 自动选择或显式配置的 envd binary 会挂载为容器内 `/usr/local/bin/envd`。
+- 请求里的 E2B volume 使用 Docker 原生 named volume。
+- Sandbox response 会返回 Docker runtime 分配的直连 `envdURL`。
+
+示例 sandbox request：
+
+```json
+{
+  "templateID": "code-interpreter",
+  "volumeMounts": [
+    {
+      "name": "my-data",
+      "path": "/mnt/data"
+    }
+  ]
+}
+```
+
+## OrbStack Runtime
+
+当每个 sandbox 需要运行在完整 Linux VM 内时，使用 OrbStack runtime：
+
+```yaml
+runtime:
+  type: "orbstack"
+
+orbstack:
+  orb_binary: "/usr/local/bin/orb"
+  machine_name_prefix: "e2b-sandbox-"
+  envd_binary: "envd-bin/envd-linux-arm64"
+  envd_port: 49983
+  volume_host_path: "~/.e2b-local/volumes"
+```
+
+OrbStack runtime 下：
+
+- 名称不以 `machine_name_prefix` 开头的现有 OrbStack machine 会作为 template 暴露。
+- 创建 sandbox 时会 clone 选中的 template machine。
+- gateway 会把 `envd_binary` 复制进 VM，并安装为 `/usr/local/bin/envd`。
+- envd 会作为 VM 内的 systemd service 运行。
+- sandbox envd URL 优先使用 VM IP 和固定 `envd_port`。
+- `orbstack.isolated: true` 会阻止 sandbox VM 看到完整 macOS 文件系统。
+- Volume 会通过 OrbStack selective mount 暴露，并在 VM 内 symlink 到请求路径。
+- Snapshot 通过 `orb clone` 创建。
+
+## SDK 使用
+
+JS SDK smoke test：
+
+```bash
+export E2B_API_URL="http://127.0.0.1:3000"
+export E2B_API_KEY="local"
+node scripts/js-sdk-smoke.mjs
+```
+
+如果使用本地 JS SDK build：
+
+```bash
+E2B_API_URL="http://127.0.0.1:3000" \
+E2B_API_KEY="local" \
+E2B_JS_SDK_IMPORT="/absolute/path/to/js-sdk/dist/index.mjs" \
+node scripts/js-sdk-smoke.mjs
+```
+
+最小 SDK 验收场景：
+
+```ts
+import { Sandbox } from 'e2b'
+
+const sandbox = await Sandbox.create()
+
+const result = await sandbox.commands.run('echo "hello"')
+console.log(result.stdout)
+
+await sandbox.kill()
+```
+
+期望行为：
+
+- `Sandbox.create()` 返回 sandbox。
+- `sandbox.sandboxId` 由 gateway 生成。
+- `sandbox.commands.run(...)` 成功。
+- `result.exitCode === 0`。
+- `result.stdout` 包含 `hello`。
+- `sandbox.kill()` 成功。
+
+## 测试
+
+运行常规测试：
+
+```bash
+go test ./...
+```
+
+可选 JS SDK 集成测试：
+
+```bash
+go test -tags=js_sdk_integration -run TestJSSDKGatewaySmoke -count=1 -v
+```
+
+可选 Go SDK 集成测试：
+
+```bash
+go test -tags=go_sdk_integration -run 'TestGoSDKGatewayMVP|TestGoSDKGatewayFilesystemDirectEnvd|TestGoSDKGatewayVolumeLifecycle' -count=1 -v
+```
+
+SDK 集成测试会通过 `LoadConfig("config.yaml")` 读取配置；当 Docker、envd、Node 或 SDK 依赖不可用时会自动跳过。
+
+## OpenAPI 重新生成
+
+生成代码位于 `internal/e2bapi/api.gen.go`，仓库内 schema 位于 `internal/e2bapi/openapi.json`。
+
+重新生成：
+
+```bash
+go generate ./internal/e2bapi
+```
+
+schema 变更后，需要同步更新 `internal/gateway/gateway_api.go` 或对应的 `GatewayCallbacks`。
+
+## 当前限制
+
+以下方向仍需要更多实现或验证：
+
+- 多租户隔离
+- 数据库持久化和高可用
+- 文件同步
+- 更多 Docker 和 OrbStack 生命周期边界测试
+- 更多 WebSocket、SSE 和 envd streaming 端到端兼容测试

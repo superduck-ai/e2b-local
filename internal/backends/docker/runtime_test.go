@@ -1,0 +1,431 @@
+package dockerbackend
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"io"
+	"net/http"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"e2b-local/internal/e2bapi"
+	gateway "e2b-local/internal/gateway"
+
+	"github.com/docker/docker/api/types/image"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+)
+
+func TestDockerRuntimeContainerCommandStartsEnvdDirectly(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	runtime := &DockerRuntime{cfg: cfg}
+
+	cmd := runtime.containerCommand("")
+	want := []string{"-isnotfc", "-port", "49983"}
+
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("expected envd command %#v, got %#v", want, cmd)
+	}
+
+	cmd = runtime.containerCommand("python main.py")
+	want = []string{"-isnotfc", "-port", "49983", "-cmd", "python main.py"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("expected envd start command %#v, got %#v", want, cmd)
+	}
+}
+
+func TestDockerReadyCommandRunsInShell(t *testing.T) {
+	cmd := dockerReadyCommand("  curl -fsS http://127.0.0.1:8000/ready  ")
+	want := []string{"/bin/sh", "-lc", "curl -fsS http://127.0.0.1:8000/ready"}
+
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("expected ready command %#v, got %#v", want, cmd)
+	}
+}
+
+func TestDockerRuntimeEnvdBinaryForPlatformUsesBundledBinary(t *testing.T) {
+	runtime := &DockerRuntime{}
+
+	amd64Binary, err := runtime.envdBinaryForPlatform(ocispec.Platform{OS: "linux", Architecture: "amd64"})
+	if err != nil {
+		t.Fatalf("select amd64 envd binary: %v", err)
+	}
+	if !strings.HasSuffix(amd64Binary, filepath.Join("envd-bin", "envd-linux-amd64")) {
+		t.Fatalf("expected amd64 bundled envd binary, got %q", amd64Binary)
+	}
+
+	arm64Binary, err := runtime.envdBinaryForPlatform(ocispec.Platform{OS: "linux", Architecture: "aarch64"})
+	if err != nil {
+		t.Fatalf("select arm64 envd binary: %v", err)
+	}
+	if !strings.HasSuffix(arm64Binary, filepath.Join("envd-bin", "envd-linux-arm64")) {
+		t.Fatalf("expected arm64 bundled envd binary, got %q", arm64Binary)
+	}
+}
+
+func TestDockerRuntimeEnvdBinaryForPlatformUsesOverride(t *testing.T) {
+	runtime := &DockerRuntime{cfg: DockerRuntimeConfig{EnvdBinary: "/tmp/custom-envd"}}
+
+	envdBinary, err := runtime.envdBinaryForPlatform(ocispec.Platform{OS: "windows", Architecture: "s390x"})
+	if err != nil {
+		t.Fatalf("select override envd binary: %v", err)
+	}
+	if envdBinary != "/tmp/custom-envd" {
+		t.Fatalf("expected override envd binary, got %q", envdBinary)
+	}
+}
+
+func TestDockerRuntimeEnvdBinaryForPlatformRejectsUnsupportedArchitecture(t *testing.T) {
+	runtime := &DockerRuntime{}
+
+	if _, err := runtime.envdBinaryForPlatform(ocispec.Platform{OS: "linux", Architecture: "s390x"}); err == nil {
+		t.Fatal("expected unsupported architecture to fail")
+	}
+}
+
+func TestReadyCommandFailureIncludesExitCodeAndOutput(t *testing.T) {
+	message := readyCommandFailure(7, "not ready\n")
+	if message != "exit code 7: not ready" {
+		t.Fatalf("unexpected ready command failure %q", message)
+	}
+
+	message = readyCommandFailure(1, "")
+	if message != "exit code 1" {
+		t.Fatalf("unexpected empty ready command failure %q", message)
+	}
+}
+
+func TestDockerBuildContextContainsDockerfile(t *testing.T) {
+	reader, err := dockerBuildContext("FROM alpine:3.20\nRUN echo ok\n")
+	if err != nil {
+		t.Fatalf("create build context: %v", err)
+	}
+
+	tarReader := tar.NewReader(reader)
+	header, err := tarReader.Next()
+	if err != nil {
+		t.Fatalf("read tar header: %v", err)
+	}
+	if header.Name != "Dockerfile" {
+		t.Fatalf("expected Dockerfile entry, got %q", header.Name)
+	}
+
+	data, err := io.ReadAll(tarReader)
+	if err != nil {
+		t.Fatalf("read dockerfile entry: %v", err)
+	}
+	if string(data) != "FROM alpine:3.20\nRUN echo ok\n" {
+		t.Fatalf("unexpected dockerfile content %q", string(data))
+	}
+	if _, err := tarReader.Next(); err != io.EOF {
+		t.Fatalf("expected only one tar entry, got err=%v", err)
+	}
+}
+
+func TestDockerBuildContextIncludesUploadedTemplateFiles(t *testing.T) {
+	archive := gzipTarBytes(t, map[string]string{
+		"src/file.txt": "hello",
+	})
+	reader, err := dockerBuildContext("FROM alpine:3.20\n", TemplateBuildFile{
+		TemplateID: "template",
+		Hash:       "hash",
+		Data:       archive,
+	})
+	if err != nil {
+		t.Fatalf("create build context: %v", err)
+	}
+
+	tarReader := tar.NewReader(reader)
+	entries := map[string]string{}
+	for {
+		header, err := tarReader.Next()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("read tar entry: %v", err)
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			continue
+		}
+		data, err := io.ReadAll(tarReader)
+		if err != nil {
+			t.Fatalf("read tar data: %v", err)
+		}
+		entries[header.Name] = string(data)
+	}
+
+	if entries["Dockerfile"] != "FROM alpine:3.20\n" {
+		t.Fatalf("expected Dockerfile in build context, got %#v", entries)
+	}
+	if entries["src/file.txt"] != "hello" {
+		t.Fatalf("expected uploaded file in build context, got %#v", entries)
+	}
+}
+
+func TestDockerBuildLogEntriesDecodeStreamAndErrors(t *testing.T) {
+	input := strings.NewReader(`{"stream":"Step 1/1 : FROM alpine\n"}{"status":"pulling","progress":"1/1"}{"errorDetail":{"message":"build failed"}}`)
+
+	logs, err := dockerBuildLogEntries(input)
+	if err == nil {
+		t.Fatal("expected docker build error")
+	}
+	if !strings.Contains(err.Error(), "build failed") {
+		t.Fatalf("expected build failure message, got %v", err)
+	}
+	if len(logs) != 3 {
+		t.Fatalf("expected three log entries, got %#v", logs)
+	}
+	if logs[0].Message != "Step 1/1 : FROM alpine" || logs[0].Level != e2bapi.LogLevelInfo {
+		t.Fatalf("unexpected first log entry: %#v", logs[0])
+	}
+	if logs[2].Message != "build failed" || logs[2].Level != e2bapi.LogLevelError {
+		t.Fatalf("unexpected error log entry: %#v", logs[2])
+	}
+}
+
+func TestDockerLogEntriesParseTimestampsAndFilters(t *testing.T) {
+	cursor := time.Date(2026, 6, 4, 0, 0, 1, 0, time.UTC).UnixMilli()
+	search := "keep"
+	input := strings.Join([]string{
+		"2026-06-04T00:00:00.500000000Z keep-before-cursor",
+		"2026-06-04T00:00:01.250000000Z keep-this",
+		"2026-06-04T00:00:02.000000000Z drop-this",
+	}, "\n")
+
+	logs := dockerLogEntries(input, e2bapi.LogLevelError, SandboxLogsRequest{
+		Cursor: &cursor,
+		Search: &search,
+	})
+
+	if len(logs) != 1 {
+		t.Fatalf("expected one filtered docker log, got %#v", logs)
+	}
+	if logs[0].Message != "keep-this" {
+		t.Fatalf("expected timestamp prefix to be removed, got %q", logs[0].Message)
+	}
+	if logs[0].Timestamp.UnixMilli() != time.Date(2026, 6, 4, 0, 0, 1, 250000000, time.UTC).UnixMilli() {
+		t.Fatalf("expected parsed docker timestamp, got %s", logs[0].Timestamp)
+	}
+	if logs[0].Level != e2bapi.LogLevelError || logs[0].Fields["source"] != "docker" {
+		t.Fatalf("unexpected docker log metadata: %#v", logs[0])
+	}
+}
+
+func TestDockerLogTailExpandsForFilteredQueries(t *testing.T) {
+	limit := int32(25)
+	search := "needle"
+	if tail := dockerLogTail(SandboxLogsRequest{Limit: limit}); tail != 25 {
+		t.Fatalf("expected unfiltered tail 25, got %d", tail)
+	}
+	if tail := dockerLogTail(SandboxLogsRequest{Limit: limit, Search: &search}); tail != 250 {
+		t.Fatalf("expected filtered tail expansion, got %d", tail)
+	}
+	cursor := int64(1000)
+	if tail := dockerLogTail(SandboxLogsRequest{Limit: limit, Cursor: &cursor}); tail != 0 {
+		t.Fatalf("expected cursor query to disable docker tail, got %d", tail)
+	}
+}
+
+func TestDockerSandboxLabelsRoundTripControlPlaneFields(t *testing.T) {
+	createdAt := time.Date(2026, 6, 4, 1, 2, 3, 4, time.UTC)
+	endAt := createdAt.Add(10 * time.Minute)
+	allowInternet := false
+	labels := dockerSandboxLabels(SandboxRuntimeCreateRequest{
+		SandboxID:  "sbx_restore",
+		TemplateID: "base",
+		Metadata:   map[string]string{"source": "restore-test"},
+		VolumeMounts: []VolumeMount{
+			{Name: "data", Path: "/mnt/data"},
+		},
+		CreatedAt:           createdAt,
+		EndAt:               endAt,
+		AllowInternetAccess: &allowInternet,
+	}, "base", "example/base:latest")
+
+	if labels[dockerGatewaySandboxIDLabel] != "sbx_restore" || labels[dockerGatewaySandboxTemplateIDLabel] != "base" {
+		t.Fatalf("missing sandbox identity labels: %#v", labels)
+	}
+	if dockerTimeLabel(labels[dockerGatewaySandboxCreatedAtLabel], time.Time{}) != createdAt {
+		t.Fatalf("expected created_at to round trip, got %q", labels[dockerGatewaySandboxCreatedAtLabel])
+	}
+	if dockerTimeLabel(labels[dockerGatewaySandboxEndAtLabel], time.Time{}) != endAt {
+		t.Fatalf("expected end_at to round trip, got %q", labels[dockerGatewaySandboxEndAtLabel])
+	}
+	if got := dockerStringMapLabel(labels[dockerGatewaySandboxMetadataLabel]); got["source"] != "restore-test" {
+		t.Fatalf("expected metadata to round trip, got %#v", got)
+	}
+	if got := dockerBoolPtrLabel(labels[dockerGatewaySandboxAllowInternetLabel]); got == nil || *got {
+		t.Fatalf("expected allow internet false, got %#v", got)
+	}
+	if got := dockerVolumeMountsFromLabels(labels); len(got) != 1 || got[0].Name != "data" || got[0].Path != "/mnt/data" {
+		t.Fatalf("expected volume mounts to round trip, got %#v", got)
+	}
+}
+
+func TestDockerfileFromTemplateBuildStartConvertsSupportedSteps(t *testing.T) {
+	runtime := &DockerRuntime{cfg: gateway.DefaultConfig().Docker}
+	runArgs := []string{"apt-get update"}
+	envArgs := []string{"A", "1", "WITH_SPACE", "hello world"}
+	workdirArgs := []string{"/app"}
+	userArgs := []string{"user"}
+	steps := []e2bapi.TemplateStep{
+		{Type: "RUN", Args: &runArgs},
+		{Type: "ENV", Args: &envArgs},
+		{Type: "WORKDIR", Args: &workdirArgs},
+		{Type: "USER", Args: &userArgs},
+	}
+	fromImage := "ubuntu:22.04"
+
+	dockerfile, err := runtime.dockerfileFromTemplateBuildStart(context.Background(), e2bapi.TemplateBuildStartV2{
+		FromImage: &fromImage,
+		Steps:     &steps,
+	})
+	if err != nil {
+		t.Fatalf("convert build start: %v", err)
+	}
+
+	want := strings.Join([]string{
+		"FROM ubuntu:22.04",
+		"RUN apt-get update",
+		"ENV A=\"1\" WITH_SPACE=\"hello world\"",
+		"WORKDIR /app",
+		"USER user",
+		"",
+	}, "\n")
+	if dockerfile != want {
+		t.Fatalf("unexpected dockerfile:\n%s\nwant:\n%s", dockerfile, want)
+	}
+}
+
+func TestDockerfileFromTemplateBuildStartConvertsCopyStep(t *testing.T) {
+	runtime := &DockerRuntime{cfg: gateway.DefaultConfig().Docker}
+	filesHash := "hash"
+	copyArgs := []string{"package.json", "/app/package.json", "root:root", "0644"}
+	steps := []e2bapi.TemplateStep{{Type: "COPY", Args: &copyArgs, FilesHash: &filesHash}}
+	fromImage := "ubuntu:22.04"
+
+	dockerfile, err := runtime.dockerfileFromTemplateBuildStart(context.Background(), e2bapi.TemplateBuildStartV2{
+		FromImage: &fromImage,
+		Steps:     &steps,
+	})
+	if err != nil {
+		t.Fatalf("convert build start: %v", err)
+	}
+
+	want := "FROM ubuntu:22.04\nCOPY --chown=root:root --chmod=0644 package.json /app/package.json\n"
+	if dockerfile != want {
+		t.Fatalf("unexpected dockerfile:\n%s\nwant:\n%s", dockerfile, want)
+	}
+}
+
+func TestDockerfileFromTemplateBuildStartRejectsCopyWithoutFilesHash(t *testing.T) {
+	runtime := &DockerRuntime{cfg: gateway.DefaultConfig().Docker}
+	copyArgs := []string{"package.json", "/app/package.json"}
+	steps := []e2bapi.TemplateStep{{Type: "COPY", Args: &copyArgs}}
+	fromImage := "ubuntu:22.04"
+
+	_, err := runtime.dockerfileFromTemplateBuildStart(context.Background(), e2bapi.TemplateBuildStartV2{
+		FromImage: &fromImage,
+		Steps:     &steps,
+	})
+	if err == nil {
+		t.Fatal("expected COPY step error")
+	}
+	if status := gatewayErrorStatus(err, 0); status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %v", http.StatusBadRequest, status, err)
+	}
+}
+
+func TestDockerSnapshotReferenceSanitizesName(t *testing.T) {
+	name := "My Snapshot:/Default"
+	ref := dockerSnapshotReference("sbx123", snapshotRequestName(e2bapi.PostSandboxesSandboxIDSnapshotsJSONBody{Name: &name}), time.Unix(123, 0).UTC())
+
+	if ref != "e2b-local/snapshots/my-snapshot-default:default" {
+		t.Fatalf("unexpected snapshot reference %q", ref)
+	}
+}
+
+func TestDockerSnapshotReferenceUsesSandboxFallback(t *testing.T) {
+	ref := dockerSnapshotReference("sbx123", "", time.Unix(123, 0).UTC())
+
+	if ref != "e2b-local/snapshots/sbx123-123:default" {
+		t.Fatalf("unexpected fallback snapshot reference %q", ref)
+	}
+}
+
+func TestSnapshotInfoFromDockerImagePrefersLabelReference(t *testing.T) {
+	info := snapshotInfoFromDockerImage(image.Summary{
+		ID:       "sha256:1234567890abcdef",
+		RepoTags: []string{"e2b-local/snapshots/savepoint:default"},
+		Labels: map[string]string{
+			dockerGatewaySnapshotRefLabel: "team/savepoint:default",
+		},
+	})
+
+	if info.SnapshotID != "team/savepoint:default" {
+		t.Fatalf("expected label snapshot id, got %#v", info)
+	}
+	if !reflect.DeepEqual(info.Names, []string{"e2b-local/snapshots/savepoint:default"}) {
+		t.Fatalf("unexpected snapshot names: %#v", info.Names)
+	}
+}
+
+func TestTemplateFromDockerImageRestoresGatewayLabels(t *testing.T) {
+	template := templateFromDockerImage("fallback", "e2b-local/templates/custom:latest", image.Summary{
+		ID:         "sha256:1234567890abcdef",
+		RepoTags:   []string{"e2b-local/templates/custom:latest"},
+		Containers: -1,
+		Created:    1717200000,
+		Size:       3 * 1024 * 1024,
+		Labels: map[string]string{
+			dockerGatewayTemplateIDLabel:       "custom-template",
+			dockerGatewayTemplateNamesLabel:    "custom-template,custom-alias",
+			dockerGatewayTemplateBuildIDLabel:  "build-123",
+			dockerGatewayTemplateCPUCountLabel: "2",
+			dockerGatewayTemplateMemoryMBLabel: "1024",
+		},
+	})
+
+	if template.TemplateID != "custom-template" || template.BuildID != "build-123" {
+		t.Fatalf("unexpected template identity: %#v", template)
+	}
+	if !reflect.DeepEqual(template.Names, []string{"custom-template", "custom-alias"}) {
+		t.Fatalf("unexpected template names: %#v", template.Names)
+	}
+	if template.CPUCount != 2 || template.MemoryMB != 1024 || template.DiskSizeMB != 3 {
+		t.Fatalf("unexpected template resources: %#v", template)
+	}
+}
+
+func gzipTarBytes(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buf)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for name, content := range files {
+		data := []byte(content)
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(data)),
+		}); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := tarWriter.Write(data); err != nil {
+			t.Fatalf("write tar data: %v", err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return buf.Bytes()
+}

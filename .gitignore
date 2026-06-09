@@ -1,0 +1,12 @@
+.idea
+/e2b-gateway
+/config.yaml
+/e2b-local
+/e2b-local.log
+/gateway.log
+/gateway.pid
+/claude-darwin-*
+/envd-*
+!/envd-bin/
+!/envd-bin/**
+orbctl

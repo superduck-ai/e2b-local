@@ -1,0 +1,32 @@
+server:
+  # Gateway listen address.
+  addr: "127.0.0.1:3000"
+
+runtime:
+  # Docker runtime creates one container per sandbox through the Docker Engine API.
+  type: "docker"
+
+docker:
+  # Omit host to use DOCKER_HOST, the current user's OrbStack socket when present,
+  # or unix:///var/run/docker.sock.
+  # host: "unix:///var/run/docker.sock"
+
+  # Docker templates are discovered from tagged local Docker images.
+  # Pull or build images locally before using them as templates.
+
+  # Optional platform override. Empty means let Docker choose the platform,
+  # then inspect the selected image architecture.
+  # platform: "linux/amd64"
+
+  # Sandbox containers are named <container_name_prefix><sandboxID>.
+  container_name_prefix: "e2b-envd-"
+
+  # Optional envd override. Empty means the gateway chooses envd-bin/envd-linux-amd64
+  # or envd-bin/envd-linux-arm64 from the selected image architecture.
+  # Relative paths are resolved from this config file when explicitly set.
+  # envd_binary: "envd-bin/envd-linux-amd64"
+
+  # envd runs on container port 49983; Docker assigns a dynamic localhost host port per sandbox.
+
+  # Time to wait for envd inside the sandbox container to become healthy.
+  health_timeout_seconds: 30

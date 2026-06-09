@@ -1,0 +1,30 @@
+server:
+  addr: "127.0.0.1:3001"
+
+runtime:
+  type: "orbstack"
+
+orbstack:
+  orb_binary: "/usr/local/bin/orb"
+
+  # Sandboxes created by the gateway will be named <machine_name_prefix><sandboxID>.
+  # Existing OrbStack machines whose names DO NOT start with this prefix are exposed as templates.
+  machine_name_prefix: "e2b-sandbox-"
+
+  # Display/metadata defaults for templates when OrbStack does not provide these values.
+  default_memory: "1G"
+  default_cpus: "1"
+  default_disk: "4G"
+
+  # Set true to stop sandbox VMs from seeing the full macOS filesystem.
+  # Volume directories are always selectively mounted into the VM.
+  isolated: true
+
+  # Local Linux envd binary used for sandbox envd bootstrap.
+  # The gateway copies it into each sandbox VM before enabling the envd service.
+  envd_binary: "envd-bin/envd-linux-arm64"
+  envd_port: 49983
+  health_timeout_seconds: 60
+
+  # Volume data lives on macOS and is selectively mounted per-volume into each sandbox VM.
+  volume_host_path: "~/.e2b-local/volumes"

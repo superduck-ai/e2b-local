@@ -1,0 +1,9 @@
+#cloud-config
+apt:
+  primary:
+    - arches: [default]
+      uri: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
+  security:
+    - arches: [default]
+      uri: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
+package_update: false

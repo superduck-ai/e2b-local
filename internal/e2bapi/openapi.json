@@ -1,0 +1,5115 @@
+{
+  "components": {
+    "parameters": {
+      "accessTokenID": {
+        "in": "path",
+        "name": "accessTokenID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "apiKeyID": {
+        "in": "path",
+        "name": "apiKeyID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "buildID": {
+        "in": "path",
+        "name": "buildID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "nodeID": {
+        "in": "path",
+        "name": "nodeID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "paginationLimit": {
+        "description": "Maximum number of items to return per page",
+        "in": "query",
+        "name": "limit",
+        "schema": {
+          "default": 100,
+          "format": "int32",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "paginationNextToken": {
+        "description": "Cursor to start the list from",
+        "in": "query",
+        "name": "nextToken",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "sandboxID": {
+        "in": "path",
+        "name": "sandboxID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "teamID": {
+        "in": "path",
+        "name": "teamID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "templateID": {
+        "in": "path",
+        "name": "templateID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "volumeID": {
+        "in": "path",
+        "name": "volumeID",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "400": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Bad request"
+      },
+      "401": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Authentication error"
+      },
+      "403": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Forbidden"
+      },
+      "404": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Not found"
+      },
+      "409": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Conflict"
+      },
+      "500": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Server error"
+      }
+    },
+    "schemas": {
+      "AWSRegistry": {
+        "properties": {
+          "awsAccessKeyId": {
+            "description": "AWS Access Key ID for ECR authentication",
+            "type": "string"
+          },
+          "awsRegion": {
+            "description": "AWS Region where the ECR registry is located",
+            "type": "string"
+          },
+          "awsSecretAccessKey": {
+            "description": "AWS Secret Access Key for ECR authentication",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type of registry authentication",
+            "enum": [
+              "aws"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "awsAccessKeyId",
+          "awsSecretAccessKey",
+          "awsRegion"
+        ],
+        "type": "object"
+      },
+      "AdminBuildCancelResult": {
+        "properties": {
+          "cancelledCount": {
+            "description": "Number of builds successfully cancelled",
+            "type": "integer"
+          },
+          "failedCount": {
+            "description": "Number of builds that failed to cancel",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cancelledCount",
+          "failedCount"
+        ]
+      },
+      "AdminSandboxKillResult": {
+        "properties": {
+          "failedCount": {
+            "description": "Number of sandboxes that failed to kill",
+            "type": "integer"
+          },
+          "killedCount": {
+            "description": "Number of sandboxes successfully killed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "killedCount",
+          "failedCount"
+        ]
+      },
+      "AssignTemplateTagsRequest": {
+        "properties": {
+          "tags": {
+            "description": "Tags to assign to the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target": {
+            "description": "Target template in \"name:tag\" format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "tags"
+        ]
+      },
+      "AssignedTemplateTags": {
+        "properties": {
+          "buildID": {
+            "description": "Identifier of the build associated with these tags",
+            "format": "uuid",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Assigned tags of the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tags",
+          "buildID"
+        ]
+      },
+      "BuildLogEntry": {
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/LogLevel"
+          },
+          "message": {
+            "description": "Log message content",
+            "type": "string"
+          },
+          "step": {
+            "description": "Step in the build process related to the log entry",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Timestamp of the log entry",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "message",
+          "level"
+        ]
+      },
+      "BuildStatusReason": {
+        "properties": {
+          "logEntries": {
+            "default": [],
+            "description": "Log entries related to the status reason",
+            "items": {
+              "$ref": "#/components/schemas/BuildLogEntry"
+            },
+            "type": "array"
+          },
+          "message": {
+            "description": "Message with the status reason, currently reporting only for error status",
+            "type": "string"
+          },
+          "step": {
+            "description": "Step that failed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "CPUCount": {
+        "description": "CPU cores for the sandbox",
+        "format": "int32",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ConnectSandbox": {
+        "properties": {
+          "timeout": {
+            "description": "Timeout in seconds from the current time after which the sandbox should expire",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeout"
+        ],
+        "type": "object"
+      },
+      "CreatedAccessToken": {
+        "properties": {
+          "createdAt": {
+            "description": "Timestamp of access token creation",
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifier of the access token",
+            "format": "uuid",
+            "type": "string"
+          },
+          "mask": {
+            "$ref": "#/components/schemas/IdentifierMaskingDetails"
+          },
+          "name": {
+            "description": "Name of the access token",
+            "type": "string"
+          },
+          "token": {
+            "description": "The fully created access token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "token",
+          "mask",
+          "createdAt"
+        ]
+      },
+      "CreatedTeamAPIKey": {
+        "properties": {
+          "createdAt": {
+            "description": "Timestamp of API key creation",
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdBy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TeamUser"
+              }
+            ],
+            "nullable": true
+          },
+          "id": {
+            "description": "Identifier of the API key",
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "description": "Raw value of the API key",
+            "type": "string"
+          },
+          "lastUsed": {
+            "description": "Last time this API key was used",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "mask": {
+            "$ref": "#/components/schemas/IdentifierMaskingDetails"
+          },
+          "name": {
+            "description": "Name of the API key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "mask",
+          "name",
+          "createdAt"
+        ]
+      },
+      "DeleteTemplateTagsRequest": {
+        "properties": {
+          "name": {
+            "description": "Name of the template",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags to delete",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "tags"
+        ]
+      },
+      "DiskMetrics": {
+        "properties": {
+          "device": {
+            "description": "Device name",
+            "type": "string"
+          },
+          "filesystemType": {
+            "description": "Filesystem type (e.g., ext4, xfs)",
+            "type": "string"
+          },
+          "mountPoint": {
+            "description": "Mount point of the disk",
+            "type": "string"
+          },
+          "totalBytes": {
+            "description": "Total space in bytes",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "usedBytes": {
+            "description": "Used space in bytes",
+            "format": "uint64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mountPoint",
+          "device",
+          "filesystemType",
+          "usedBytes",
+          "totalBytes"
+        ]
+      },
+      "DiskSizeMB": {
+        "description": "Disk size for the sandbox in MiB",
+        "format": "int32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "EnvVars": {
+        "additionalProperties": {
+          "description": "Environment variables for the sandbox",
+          "type": "string"
+        }
+      },
+      "EnvdVersion": {
+        "description": "Version of the envd running in the sandbox",
+        "type": "string"
+      },
+      "Error": {
+        "properties": {
+          "code": {
+            "description": "Error code",
+            "format": "int32",
+            "type": "integer"
+          },
+          "message": {
+            "description": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "FromImageRegistry": {
+        "discriminator": {
+          "mapping": {
+            "aws": "#/components/schemas/AWSRegistry",
+            "gcp": "#/components/schemas/GCPRegistry",
+            "registry": "#/components/schemas/GeneralRegistry"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AWSRegistry"
+          },
+          {
+            "$ref": "#/components/schemas/GCPRegistry"
+          },
+          {
+            "$ref": "#/components/schemas/GeneralRegistry"
+          }
+        ]
+      },
+      "GCPRegistry": {
+        "properties": {
+          "serviceAccountJson": {
+            "description": "Service Account JSON for GCP authentication",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type of registry authentication",
+            "enum": [
+              "gcp"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "serviceAccountJson"
+        ],
+        "type": "object"
+      },
+      "GeneralRegistry": {
+        "properties": {
+          "password": {
+            "description": "Password to use for the registry",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type of registry authentication",
+            "enum": [
+              "registry"
+            ],
+            "type": "string"
+          },
+          "username": {
+            "description": "Username to use for the registry",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "username",
+          "password"
+        ],
+        "type": "object"
+      },
+      "IdentifierMaskingDetails": {
+        "properties": {
+          "maskedValuePrefix": {
+            "description": "Prefix used in masked version of the token or key",
+            "type": "string"
+          },
+          "maskedValueSuffix": {
+            "description": "Suffix used in masked version of the token or key",
+            "type": "string"
+          },
+          "prefix": {
+            "description": "Prefix that identifies the token or key type",
+            "type": "string"
+          },
+          "valueLength": {
+            "description": "Length of the token or key",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prefix",
+          "valueLength",
+          "maskedValuePrefix",
+          "maskedValueSuffix"
+        ]
+      },
+      "ListedSandbox": {
+        "properties": {
+          "alias": {
+            "description": "Alias of the template",
+            "type": "string"
+          },
+          "clientID": {
+            "deprecated": true,
+            "description": "Identifier of the client",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "diskSizeMB": {
+            "$ref": "#/components/schemas/DiskSizeMB"
+          },
+          "endAt": {
+            "description": "Time when the sandbox will expire",
+            "format": "date-time",
+            "type": "string"
+          },
+          "envdVersion": {
+            "$ref": "#/components/schemas/EnvdVersion"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/SandboxMetadata"
+          },
+          "sandboxID": {
+            "description": "Identifier of the sandbox",
+            "type": "string"
+          },
+          "startedAt": {
+            "description": "Time when the sandbox was started",
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SandboxState"
+          },
+          "templateID": {
+            "description": "Identifier of the template from which is the sandbox created",
+            "type": "string"
+          },
+          "volumeMounts": {
+            "items": {
+              "$ref": "#/components/schemas/SandboxVolumeMount"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "templateID",
+          "sandboxID",
+          "clientID",
+          "startedAt",
+          "cpuCount",
+          "memoryMB",
+          "diskSizeMB",
+          "endAt",
+          "state",
+          "envdVersion"
+        ]
+      },
+      "LogLevel": {
+        "description": "State of the sandbox",
+        "enum": [
+          "debug",
+          "info",
+          "warn",
+          "error"
+        ],
+        "type": "string"
+      },
+      "LogsDirection": {
+        "description": "Direction of the logs that should be returned",
+        "enum": [
+          "forward",
+          "backward"
+        ],
+        "type": "string",
+        "x-enum-varnames": [
+          "LogsDirectionForward",
+          "LogsDirectionBackward"
+        ]
+      },
+      "LogsSource": {
+        "description": "Source of the logs that should be returned",
+        "enum": [
+          "temporary",
+          "persistent"
+        ],
+        "type": "string",
+        "x-enum-varnames": [
+          "LogsSourceTemporary",
+          "LogsSourcePersistent"
+        ]
+      },
+      "MachineInfo": {
+        "properties": {
+          "cpuArchitecture": {
+            "description": "CPU architecture of the node",
+            "type": "string"
+          },
+          "cpuFamily": {
+            "description": "CPU family of the node",
+            "type": "string"
+          },
+          "cpuModel": {
+            "description": "CPU model of the node",
+            "type": "string"
+          },
+          "cpuModelName": {
+            "description": "CPU model name of the node",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cpuFamily",
+          "cpuModel",
+          "cpuModelName",
+          "cpuArchitecture"
+        ]
+      },
+      "MaxTeamMetric": {
+        "description": "Team metric with timestamp",
+        "properties": {
+          "timestamp": {
+            "deprecated": true,
+            "description": "Timestamp of the metric entry",
+            "format": "date-time",
+            "type": "string"
+          },
+          "timestampUnix": {
+            "description": "Timestamp of the metric entry in Unix time (seconds since epoch)",
+            "format": "int64",
+            "type": "integer"
+          },
+          "value": {
+            "description": "The maximum value of the requested metric in the given interval",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timestamp",
+          "timestampUnix",
+          "value"
+        ]
+      },
+      "Mcp": {
+        "additionalProperties": {},
+        "description": "MCP configuration for the sandbox",
+        "nullable": true,
+        "type": "object"
+      },
+      "MemoryMB": {
+        "description": "Memory for the sandbox in MiB",
+        "format": "int32",
+        "minimum": 128,
+        "type": "integer"
+      },
+      "NewAccessToken": {
+        "properties": {
+          "name": {
+            "description": "Name of the access token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "NewSandbox": {
+        "properties": {
+          "allow_internet_access": {
+            "description": "Allow sandbox to access the internet. When set to false, it behaves the same as specifying denyOut to 0.0.0.0/0 in the network config.",
+            "type": "boolean"
+          },
+          "autoPause": {
+            "default": false,
+            "description": "Automatically pauses the sandbox after the timeout",
+            "type": "boolean"
+          },
+          "autoResume": {
+            "$ref": "#/components/schemas/SandboxAutoResumeConfig"
+          },
+          "envVars": {
+            "$ref": "#/components/schemas/EnvVars"
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/Mcp"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/SandboxMetadata"
+          },
+          "network": {
+            "$ref": "#/components/schemas/SandboxNetworkConfig"
+          },
+          "secure": {
+            "description": "Secure all system communication with sandbox",
+            "type": "boolean"
+          },
+          "templateID": {
+            "description": "Identifier of the required template",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 15,
+            "description": "Time to live for the sandbox in seconds.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "volumeMounts": {
+            "items": {
+              "$ref": "#/components/schemas/SandboxVolumeMount"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "templateID"
+        ]
+      },
+      "NewTeamAPIKey": {
+        "properties": {
+          "name": {
+            "description": "Name of the API key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "NewVolume": {
+        "properties": {
+          "name": {
+            "description": "Name of the volume",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Node": {
+        "properties": {
+          "clusterID": {
+            "description": "Identifier of the cluster",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Commit of the orchestrator",
+            "type": "string"
+          },
+          "createFails": {
+            "description": "Number of sandbox create fails",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "createSuccesses": {
+            "description": "Number of sandbox create successes",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Identifier of the node",
+            "type": "string"
+          },
+          "machineInfo": {
+            "$ref": "#/components/schemas/MachineInfo"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/NodeMetrics"
+          },
+          "sandboxCount": {
+            "description": "Number of sandboxes running on the node",
+            "format": "uint32",
+            "type": "integer"
+          },
+          "sandboxStartingCount": {
+            "description": "Number of starting Sandboxes",
+            "format": "int",
+            "type": "integer"
+          },
+          "serviceInstanceID": {
+            "description": "Service instance identifier of the node",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NodeStatus"
+          },
+          "version": {
+            "description": "Version of the orchestrator",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "serviceInstanceID",
+          "clusterID",
+          "status",
+          "sandboxCount",
+          "metrics",
+          "createSuccesses",
+          "createFails",
+          "sandboxStartingCount",
+          "version",
+          "commit",
+          "machineInfo"
+        ]
+      },
+      "NodeDetail": {
+        "properties": {
+          "cachedBuilds": {
+            "description": "List of cached builds id on the node",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "clusterID": {
+            "description": "Identifier of the cluster",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Commit of the orchestrator",
+            "type": "string"
+          },
+          "createFails": {
+            "description": "Number of sandbox create fails",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "createSuccesses": {
+            "description": "Number of sandbox create successes",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Identifier of the node",
+            "type": "string"
+          },
+          "machineInfo": {
+            "$ref": "#/components/schemas/MachineInfo"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/NodeMetrics"
+          },
+          "sandboxCount": {
+            "description": "Number of sandboxes running on the node",
+            "format": "uint32",
+            "type": "integer"
+          },
+          "serviceInstanceID": {
+            "description": "Service instance identifier of the node",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NodeStatus"
+          },
+          "version": {
+            "description": "Version of the orchestrator",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "serviceInstanceID",
+          "clusterID",
+          "status",
+          "sandboxCount",
+          "cachedBuilds",
+          "createSuccesses",
+          "createFails",
+          "version",
+          "commit",
+          "metrics",
+          "machineInfo"
+        ]
+      },
+      "NodeMetrics": {
+        "description": "Node metrics",
+        "properties": {
+          "allocatedCPU": {
+            "description": "Number of allocated CPU cores",
+            "format": "uint32",
+            "type": "integer"
+          },
+          "allocatedMemoryBytes": {
+            "description": "Amount of allocated memory in bytes",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "cpuCount": {
+            "description": "Total number of CPU cores on the node",
+            "format": "uint32",
+            "type": "integer"
+          },
+          "cpuPercent": {
+            "description": "Node CPU usage percentage",
+            "format": "uint32",
+            "type": "integer"
+          },
+          "disks": {
+            "description": "Detailed metrics for each disk/mount point",
+            "items": {
+              "$ref": "#/components/schemas/DiskMetrics"
+            },
+            "type": "array"
+          },
+          "memoryTotalBytes": {
+            "description": "Total node memory in bytes",
+            "format": "uint64",
+            "type": "integer"
+          },
+          "memoryUsedBytes": {
+            "description": "Node memory used in bytes",
+            "format": "uint64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "allocatedCPU",
+          "allocatedMemoryBytes",
+          "cpuPercent",
+          "memoryUsedBytes",
+          "cpuCount",
+          "memoryTotalBytes",
+          "disks"
+        ]
+      },
+      "NodeStatus": {
+        "description": "Status of the node.\n- draining: the node is bound to be shut down. It will not accept new sandboxes and will stop once all existing sandboxes are done.\n- standby: the node is not actively used, but it can return to ready and continue serving traffic.\n",
+        "enum": [
+          "ready",
+          "draining",
+          "connecting",
+          "unhealthy",
+          "standby"
+        ],
+        "type": "string",
+        "x-enum-varnames": [
+          "NodeStatusReady",
+          "NodeStatusDraining",
+          "NodeStatusConnecting",
+          "NodeStatusUnhealthy",
+          "NodeStatusStandby"
+        ]
+      },
+      "NodeStatusChange": {
+        "properties": {
+          "clusterID": {
+            "description": "Identifier of the cluster",
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NodeStatus"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ResumedSandbox": {
+        "properties": {
+          "autoPause": {
+            "deprecated": true,
+            "description": "Automatically pauses the sandbox after the timeout",
+            "type": "boolean"
+          },
+          "timeout": {
+            "default": 15,
+            "description": "Time to live for the sandbox in seconds.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      },
+      "Sandbox": {
+        "properties": {
+          "alias": {
+            "description": "Alias of the template",
+            "type": "string"
+          },
+          "clientID": {
+            "deprecated": true,
+            "description": "Identifier of the client",
+            "type": "string"
+          },
+          "domain": {
+            "description": "Base domain where the sandbox traffic is accessible",
+            "nullable": true,
+            "type": "string"
+          },
+          "envdAccessToken": {
+            "description": "Access token used for envd communication",
+            "type": "string"
+          },
+          "envdVersion": {
+            "$ref": "#/components/schemas/EnvdVersion"
+          },
+          "sandboxID": {
+            "description": "Identifier of the sandbox",
+            "type": "string"
+          },
+          "templateID": {
+            "description": "Identifier of the template from which is the sandbox created",
+            "type": "string"
+          },
+          "trafficAccessToken": {
+            "description": "Token required for accessing sandbox via proxy.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "sandboxID",
+          "clientID",
+          "envdVersion"
+        ]
+      },
+      "SandboxAutoResumeConfig": {
+        "description": "Auto-resume configuration for paused sandboxes.",
+        "properties": {
+          "enabled": {
+            "$ref": "#/components/schemas/SandboxAutoResumeEnabled"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "SandboxAutoResumeEnabled": {
+        "default": false,
+        "description": "Auto-resume enabled flag for paused sandboxes. Default false.",
+        "type": "boolean"
+      },
+      "SandboxDetail": {
+        "properties": {
+          "alias": {
+            "description": "Alias of the template",
+            "type": "string"
+          },
+          "allowInternetAccess": {
+            "description": "Whether internet access was explicitly enabled or disabled for the sandbox. Null means it was not explicitly set.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "clientID": {
+            "deprecated": true,
+            "description": "Identifier of the client",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "diskSizeMB": {
+            "$ref": "#/components/schemas/DiskSizeMB"
+          },
+          "domain": {
+            "description": "Base domain where the sandbox traffic is accessible",
+            "nullable": true,
+            "type": "string"
+          },
+          "endAt": {
+            "description": "Time when the sandbox will expire",
+            "format": "date-time",
+            "type": "string"
+          },
+          "envdAccessToken": {
+            "description": "Access token used for envd communication",
+            "type": "string"
+          },
+          "envdVersion": {
+            "$ref": "#/components/schemas/EnvdVersion"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/SandboxLifecycle"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/SandboxMetadata"
+          },
+          "network": {
+            "$ref": "#/components/schemas/SandboxNetworkConfig"
+          },
+          "sandboxID": {
+            "description": "Identifier of the sandbox",
+            "type": "string"
+          },
+          "startedAt": {
+            "description": "Time when the sandbox was started",
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SandboxState"
+          },
+          "templateID": {
+            "description": "Identifier of the template from which is the sandbox created",
+            "type": "string"
+          },
+          "volumeMounts": {
+            "items": {
+              "$ref": "#/components/schemas/SandboxVolumeMount"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "templateID",
+          "sandboxID",
+          "clientID",
+          "startedAt",
+          "cpuCount",
+          "memoryMB",
+          "diskSizeMB",
+          "endAt",
+          "state",
+          "envdVersion"
+        ]
+      },
+      "SandboxLifecycle": {
+        "description": "Sandbox lifecycle policy returned by sandbox info.",
+        "properties": {
+          "autoResume": {
+            "description": "Whether the sandbox can auto-resume.",
+            "type": "boolean"
+          },
+          "onTimeout": {
+            "$ref": "#/components/schemas/SandboxOnTimeout"
+          }
+        },
+        "required": [
+          "autoResume",
+          "onTimeout"
+        ],
+        "type": "object"
+      },
+      "SandboxLog": {
+        "description": "Log entry with timestamp and line",
+        "properties": {
+          "line": {
+            "description": "Log line content",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Timestamp of the log entry",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "line"
+        ]
+      },
+      "SandboxLogEntry": {
+        "properties": {
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "level": {
+            "$ref": "#/components/schemas/LogLevel"
+          },
+          "message": {
+            "description": "Log message content",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Timestamp of the log entry",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "level",
+          "message",
+          "fields"
+        ]
+      },
+      "SandboxLogs": {
+        "properties": {
+          "logEntries": {
+            "description": "Structured logs of the sandbox",
+            "items": {
+              "$ref": "#/components/schemas/SandboxLogEntry"
+            },
+            "type": "array"
+          },
+          "logs": {
+            "description": "Logs of the sandbox",
+            "items": {
+              "$ref": "#/components/schemas/SandboxLog"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "logs",
+          "logEntries"
+        ]
+      },
+      "SandboxLogsV2Response": {
+        "properties": {
+          "logs": {
+            "default": [],
+            "description": "Sandbox logs structured",
+            "items": {
+              "$ref": "#/components/schemas/SandboxLogEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "logs"
+        ]
+      },
+      "SandboxMetadata": {
+        "additionalProperties": {
+          "description": "Metadata of the sandbox",
+          "type": "string"
+        }
+      },
+      "SandboxMetric": {
+        "description": "Metric entry with timestamp and line",
+        "properties": {
+          "cpuCount": {
+            "description": "Number of CPU cores",
+            "format": "int32",
+            "type": "integer"
+          },
+          "cpuUsedPct": {
+            "description": "CPU usage percentage",
+            "format": "float",
+            "type": "number"
+          },
+          "diskTotal": {
+            "description": "Total disk space in bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "diskUsed": {
+            "description": "Disk used in bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "memCache": {
+            "description": "Cached memory (page cache) in bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "memTotal": {
+            "description": "Total memory in bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "memUsed": {
+            "description": "Memory used in bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "timestamp": {
+            "deprecated": true,
+            "description": "Timestamp of the metric entry",
+            "format": "date-time",
+            "type": "string"
+          },
+          "timestampUnix": {
+            "description": "Timestamp of the metric entry in Unix time (seconds since epoch)",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timestamp",
+          "timestampUnix",
+          "cpuCount",
+          "cpuUsedPct",
+          "memUsed",
+          "memTotal",
+          "memCache",
+          "diskUsed",
+          "diskTotal"
+        ]
+      },
+      "SandboxNetworkConfig": {
+        "properties": {
+          "allowOut": {
+            "description": "List of allowed destinations for egress traffic. Each entry can be a CIDR block (e.g. \"8.8.8.8/32\"), a bare IP address (e.g. \"8.8.8.8\"), or a domain name (e.g. \"example.com\", \"*.example.com\"). Allowed entries always take precedence over denied entries.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allowPublicTraffic": {
+            "default": true,
+            "description": "Specify if the sandbox URLs should be accessible only with authentication.",
+            "type": "boolean"
+          },
+          "denyOut": {
+            "description": "List of denied CIDR blocks or IP addresses for egress traffic. Domain names are not supported for deny rules.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maskRequestHost": {
+            "description": "Specify host mask which will be used for all sandbox requests",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "SandboxOnTimeout": {
+        "description": "Action taken when the sandbox times out.",
+        "enum": [
+          "kill",
+          "pause"
+        ],
+        "type": "string"
+      },
+      "SandboxState": {
+        "description": "State of the sandbox",
+        "enum": [
+          "running",
+          "paused"
+        ],
+        "type": "string"
+      },
+      "SandboxVolumeMount": {
+        "properties": {
+          "name": {
+            "description": "Name of the volume",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path of the volume",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "type": "object"
+      },
+      "SandboxesWithMetrics": {
+        "properties": {
+          "sandboxes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SandboxMetric"
+            }
+          }
+        },
+        "required": [
+          "sandboxes"
+        ]
+      },
+      "SnapshotInfo": {
+        "properties": {
+          "names": {
+            "description": "Full names of the snapshot template including team namespace and tag (e.g. team-slug/my-snapshot:v2)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "snapshotID": {
+            "description": "Identifier of the snapshot template including the tag. Uses namespace/alias when a name was provided (e.g. team-slug/my-snapshot:default), otherwise falls back to the raw template ID (e.g. abc123:default).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshotID",
+          "names"
+        ],
+        "type": "object"
+      },
+      "Team": {
+        "properties": {
+          "apiKey": {
+            "description": "API key for the team",
+            "type": "string"
+          },
+          "isDefault": {
+            "description": "Whether the team is the default team",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Name of the team",
+            "type": "string"
+          },
+          "teamID": {
+            "description": "Identifier of the team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "teamID",
+          "name",
+          "apiKey",
+          "isDefault"
+        ]
+      },
+      "TeamAPIKey": {
+        "properties": {
+          "createdAt": {
+            "description": "Timestamp of API key creation",
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdBy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TeamUser"
+              }
+            ],
+            "nullable": true
+          },
+          "id": {
+            "description": "Identifier of the API key",
+            "format": "uuid",
+            "type": "string"
+          },
+          "lastUsed": {
+            "description": "Last time this API key was used",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "mask": {
+            "$ref": "#/components/schemas/IdentifierMaskingDetails"
+          },
+          "name": {
+            "description": "Name of the API key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mask",
+          "createdAt"
+        ]
+      },
+      "TeamMetric": {
+        "description": "Team metric with timestamp",
+        "properties": {
+          "concurrentSandboxes": {
+            "description": "The number of concurrent sandboxes for the team",
+            "format": "int32",
+            "type": "integer"
+          },
+          "sandboxStartRate": {
+            "description": "Number of sandboxes started per second",
+            "format": "float",
+            "type": "number"
+          },
+          "timestamp": {
+            "deprecated": true,
+            "description": "Timestamp of the metric entry",
+            "format": "date-time",
+            "type": "string"
+          },
+          "timestampUnix": {
+            "description": "Timestamp of the metric entry in Unix time (seconds since epoch)",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timestamp",
+          "timestampUnix",
+          "concurrentSandboxes",
+          "sandboxStartRate"
+        ]
+      },
+      "TeamUser": {
+        "properties": {
+          "email": {
+            "description": "Email of the user",
+            "type": "string"
+          },
+          "id": {
+            "description": "Identifier of the user",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email"
+        ]
+      },
+      "Template": {
+        "properties": {
+          "aliases": {
+            "deprecated": true,
+            "description": "Aliases of the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "buildCount": {
+            "description": "Number of times the template was built",
+            "format": "int32",
+            "type": "integer"
+          },
+          "buildID": {
+            "description": "Identifier of the last successful build for given template",
+            "type": "string"
+          },
+          "buildStatus": {
+            "$ref": "#/components/schemas/TemplateBuildStatus"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "createdAt": {
+            "description": "Time when the template was created",
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdBy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TeamUser"
+              }
+            ],
+            "nullable": true
+          },
+          "diskSizeMB": {
+            "$ref": "#/components/schemas/DiskSizeMB"
+          },
+          "envdVersion": {
+            "$ref": "#/components/schemas/EnvdVersion"
+          },
+          "lastSpawnedAt": {
+            "description": "Time when the template was last used",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "names": {
+            "description": "Names of the template (namespace/alias format when namespaced)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "public": {
+            "description": "Whether the template is public or only accessible by the team",
+            "type": "boolean"
+          },
+          "spawnCount": {
+            "description": "Number of times the template was used",
+            "format": "int64",
+            "type": "integer"
+          },
+          "templateID": {
+            "description": "Identifier of the template",
+            "type": "string"
+          },
+          "updatedAt": {
+            "description": "Time when the template was last updated",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "buildID",
+          "cpuCount",
+          "memoryMB",
+          "diskSizeMB",
+          "public",
+          "createdAt",
+          "updatedAt",
+          "createdBy",
+          "lastSpawnedAt",
+          "spawnCount",
+          "buildCount",
+          "envdVersion",
+          "aliases",
+          "names",
+          "buildStatus"
+        ]
+      },
+      "TemplateAliasResponse": {
+        "properties": {
+          "public": {
+            "description": "Whether the template is public or only accessible by the team",
+            "type": "boolean"
+          },
+          "templateID": {
+            "description": "Identifier of the template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "public"
+        ]
+      },
+      "TemplateBuild": {
+        "properties": {
+          "buildID": {
+            "description": "Identifier of the build",
+            "format": "uuid",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "createdAt": {
+            "description": "Time when the build was created",
+            "format": "date-time",
+            "type": "string"
+          },
+          "diskSizeMB": {
+            "$ref": "#/components/schemas/DiskSizeMB"
+          },
+          "envdVersion": {
+            "$ref": "#/components/schemas/EnvdVersion"
+          },
+          "finishedAt": {
+            "description": "Time when the build was finished",
+            "format": "date-time",
+            "type": "string"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TemplateBuildStatus"
+          },
+          "updatedAt": {
+            "description": "Time when the build was last updated",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "buildID",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "cpuCount",
+          "memoryMB"
+        ]
+      },
+      "TemplateBuildFileUpload": {
+        "properties": {
+          "present": {
+            "description": "Whether the file is already present in the cache",
+            "type": "boolean"
+          },
+          "url": {
+            "description": "Url where the file should be uploaded to",
+            "type": "string"
+          }
+        },
+        "required": [
+          "present"
+        ]
+      },
+      "TemplateBuildInfo": {
+        "properties": {
+          "buildID": {
+            "description": "Identifier of the build",
+            "type": "string"
+          },
+          "logEntries": {
+            "default": [],
+            "description": "Build logs structured",
+            "items": {
+              "$ref": "#/components/schemas/BuildLogEntry"
+            },
+            "type": "array"
+          },
+          "logs": {
+            "default": [],
+            "description": "Build logs",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/BuildStatusReason"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TemplateBuildStatus"
+          },
+          "templateID": {
+            "description": "Identifier of the template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "buildID",
+          "status",
+          "logs",
+          "logEntries"
+        ]
+      },
+      "TemplateBuildLogsResponse": {
+        "properties": {
+          "logs": {
+            "default": [],
+            "description": "Build logs structured",
+            "items": {
+              "$ref": "#/components/schemas/BuildLogEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "logs"
+        ]
+      },
+      "TemplateBuildRequest": {
+        "properties": {
+          "alias": {
+            "description": "Alias of the template",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "dockerfile": {
+            "description": "Dockerfile for the template",
+            "type": "string"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "readyCmd": {
+            "description": "Ready check command to execute in the template after the build",
+            "type": "string"
+          },
+          "startCmd": {
+            "description": "Start command to execute in the template after the build",
+            "type": "string"
+          },
+          "teamID": {
+            "description": "Identifier of the team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dockerfile"
+        ]
+      },
+      "TemplateBuildRequestV2": {
+        "properties": {
+          "alias": {
+            "description": "Alias of the template",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "teamID": {
+            "deprecated": true,
+            "description": "Identifier of the team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias"
+        ]
+      },
+      "TemplateBuildRequestV3": {
+        "properties": {
+          "alias": {
+            "deprecated": true,
+            "description": "Alias of the template. Deprecated, use name instead.",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "name": {
+            "description": "Name of the template. Can include a tag with colon separator (e.g. \"my-template\" or \"my-template:v1\"). If tag is included, it will be treated as if the tag was provided in the tags array.",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags to assign to the template build",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "teamID": {
+            "deprecated": true,
+            "description": "Identifier of the team",
+            "type": "string"
+          }
+        }
+      },
+      "TemplateBuildStartV2": {
+        "properties": {
+          "force": {
+            "default": false,
+            "description": "Whether the whole build should be forced to run regardless of the cache",
+            "type": "boolean"
+          },
+          "fromImage": {
+            "description": "Image to use as a base for the template build",
+            "type": "string"
+          },
+          "fromImageRegistry": {
+            "$ref": "#/components/schemas/FromImageRegistry"
+          },
+          "fromTemplate": {
+            "description": "Template to use as a base for the template build",
+            "type": "string"
+          },
+          "readyCmd": {
+            "description": "Ready check command to execute in the template after the build",
+            "type": "string"
+          },
+          "startCmd": {
+            "description": "Start command to execute in the template after the build",
+            "type": "string"
+          },
+          "steps": {
+            "default": [],
+            "description": "List of steps to execute in the template build",
+            "items": {
+              "$ref": "#/components/schemas/TemplateStep"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "TemplateBuildStatus": {
+        "description": "Status of the template build",
+        "enum": [
+          "building",
+          "waiting",
+          "ready",
+          "error"
+        ],
+        "type": "string"
+      },
+      "TemplateLegacy": {
+        "properties": {
+          "aliases": {
+            "description": "Aliases of the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "buildCount": {
+            "description": "Number of times the template was built",
+            "format": "int32",
+            "type": "integer"
+          },
+          "buildID": {
+            "description": "Identifier of the last successful build for given template",
+            "type": "string"
+          },
+          "cpuCount": {
+            "$ref": "#/components/schemas/CPUCount"
+          },
+          "createdAt": {
+            "description": "Time when the template was created",
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdBy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TeamUser"
+              }
+            ],
+            "nullable": true
+          },
+          "diskSizeMB": {
+            "$ref": "#/components/schemas/DiskSizeMB"
+          },
+          "envdVersion": {
+            "$ref": "#/components/schemas/EnvdVersion"
+          },
+          "lastSpawnedAt": {
+            "description": "Time when the template was last used",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "memoryMB": {
+            "$ref": "#/components/schemas/MemoryMB"
+          },
+          "public": {
+            "description": "Whether the template is public or only accessible by the team",
+            "type": "boolean"
+          },
+          "spawnCount": {
+            "description": "Number of times the template was used",
+            "format": "int64",
+            "type": "integer"
+          },
+          "templateID": {
+            "description": "Identifier of the template",
+            "type": "string"
+          },
+          "updatedAt": {
+            "description": "Time when the template was last updated",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "buildID",
+          "cpuCount",
+          "memoryMB",
+          "diskSizeMB",
+          "public",
+          "createdAt",
+          "updatedAt",
+          "createdBy",
+          "lastSpawnedAt",
+          "spawnCount",
+          "buildCount",
+          "envdVersion",
+          "aliases"
+        ]
+      },
+      "TemplateRequestResponseV3": {
+        "properties": {
+          "aliases": {
+            "deprecated": true,
+            "description": "Aliases of the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "buildID": {
+            "description": "Identifier of the last successful build for given template",
+            "type": "string"
+          },
+          "names": {
+            "description": "Names of the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "public": {
+            "description": "Whether the template is public or only accessible by the team",
+            "type": "boolean"
+          },
+          "tags": {
+            "description": "Tags assigned to the template build",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "templateID": {
+            "description": "Identifier of the template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "buildID",
+          "public",
+          "aliases",
+          "names",
+          "tags"
+        ]
+      },
+      "TemplateStep": {
+        "description": "Step in the template build process",
+        "properties": {
+          "args": {
+            "default": [],
+            "description": "Arguments for the step",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "filesHash": {
+            "description": "Hash of the files used in the step",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "description": "Whether the step should be forced to run regardless of the cache",
+            "type": "boolean"
+          },
+          "type": {
+            "description": "Type of the step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "TemplateTag": {
+        "properties": {
+          "buildID": {
+            "description": "Identifier of the build associated with this tag",
+            "format": "uuid",
+            "type": "string"
+          },
+          "createdAt": {
+            "description": "Time when the tag was assigned",
+            "format": "date-time",
+            "type": "string"
+          },
+          "tag": {
+            "description": "The tag name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "buildID",
+          "createdAt"
+        ]
+      },
+      "TemplateUpdateRequest": {
+        "properties": {
+          "public": {
+            "description": "Whether the template is public or only accessible by the team",
+            "type": "boolean"
+          }
+        }
+      },
+      "TemplateUpdateResponse": {
+        "properties": {
+          "names": {
+            "description": "Names of the template (namespace/alias format when namespaced)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ]
+      },
+      "TemplateWithBuilds": {
+        "properties": {
+          "aliases": {
+            "deprecated": true,
+            "description": "Aliases of the template",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "builds": {
+            "description": "List of builds for the template",
+            "items": {
+              "$ref": "#/components/schemas/TemplateBuild"
+            },
+            "type": "array"
+          },
+          "createdAt": {
+            "description": "Time when the template was created",
+            "format": "date-time",
+            "type": "string"
+          },
+          "lastSpawnedAt": {
+            "description": "Time when the template was last used",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "names": {
+            "description": "Names of the template (namespace/alias format when namespaced)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "public": {
+            "description": "Whether the template is public or only accessible by the team",
+            "type": "boolean"
+          },
+          "spawnCount": {
+            "description": "Number of times the template was used",
+            "format": "int64",
+            "type": "integer"
+          },
+          "templateID": {
+            "description": "Identifier of the template",
+            "type": "string"
+          },
+          "updatedAt": {
+            "description": "Time when the template was last updated",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateID",
+          "public",
+          "aliases",
+          "names",
+          "createdAt",
+          "updatedAt",
+          "lastSpawnedAt",
+          "spawnCount",
+          "builds"
+        ]
+      },
+      "UpdateTeamAPIKey": {
+        "properties": {
+          "name": {
+            "description": "New name for the API key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "Volume": {
+        "properties": {
+          "name": {
+            "description": "Name of the volume",
+            "type": "string"
+          },
+          "volumeID": {
+            "description": "ID of the volume",
+            "type": "string"
+          }
+        },
+        "required": [
+          "volumeID",
+          "name"
+        ],
+        "type": "object"
+      },
+      "VolumeAndToken": {
+        "properties": {
+          "name": {
+            "description": "Name of the volume",
+            "type": "string"
+          },
+          "token": {
+            "description": "Auth token to use for interacting with volume content",
+            "type": "string"
+          },
+          "volumeID": {
+            "description": "ID of the volume",
+            "type": "string"
+          }
+        },
+        "required": [
+          "volumeID",
+          "name",
+          "token"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "AccessTokenAuth": {
+        "bearerFormat": "access_token",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "AdminTokenAuth": {
+        "in": "header",
+        "name": "X-Admin-Token",
+        "type": "apiKey"
+      },
+      "ApiKeyAuth": {
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      },
+      "Supabase1TokenAuth": {
+        "in": "header",
+        "name": "X-Supabase-Token",
+        "type": "apiKey"
+      },
+      "Supabase2TeamAuth": {
+        "in": "header",
+        "name": "X-Supabase-Team",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "title": "E2B API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.0",
+  "paths": {
+    "/access-tokens": {
+      "post": {
+        "description": "Create a new access token",
+        "operationId": "PostAccessTokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewAccessToken"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedAccessToken"
+                }
+              }
+            },
+            "description": "Access token created successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "Supabase1TokenAuth": []
+          }
+        ],
+        "tags": [
+          "access-tokens"
+        ]
+      }
+    },
+    "/access-tokens/{accessTokenID}": {
+      "delete": {
+        "description": "Delete an access token",
+        "operationId": "DeleteAccessTokensAccessTokenID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/accessTokenID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Access token deleted successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "Supabase1TokenAuth": []
+          }
+        ],
+        "tags": [
+          "access-tokens"
+        ]
+      }
+    },
+    "/admin/teams/{teamID}/builds/cancel": {
+      "post": {
+        "description": "Cancels all in-progress and pending builds for the specified team",
+        "operationId": "PostAdminTeamsTeamIDBuildsCancel",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "teamID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBuildCancelResult"
+                }
+              }
+            },
+            "description": "Successfully cancelled builds"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AdminTokenAuth": []
+          }
+        ],
+        "summary": "Cancel all builds for a team",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/teams/{teamID}/sandboxes/kill": {
+      "post": {
+        "description": "Kills all sandboxes for the specified team",
+        "operationId": "PostAdminTeamsTeamIDSandboxesKill",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "teamID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSandboxKillResult"
+                }
+              }
+            },
+            "description": "Successfully killed sandboxes"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AdminTokenAuth": []
+          }
+        ],
+        "summary": "Kill all sandboxes for a team",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api-keys": {
+      "get": {
+        "description": "List all team API keys",
+        "operationId": "GetApiKeys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TeamAPIKey"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned all team API keys"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "api-keys"
+        ]
+      },
+      "post": {
+        "description": "Create a new team API key",
+        "operationId": "PostApiKeys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTeamAPIKey"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedTeamAPIKey"
+                }
+              }
+            },
+            "description": "Team API key created successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "api-keys"
+        ]
+      }
+    },
+    "/api-keys/{apiKeyID}": {
+      "delete": {
+        "description": "Delete a team API key",
+        "operationId": "DeleteApiKeysApiKeyID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/apiKeyID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Team API key deleted successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "api-keys"
+        ]
+      },
+      "patch": {
+        "description": "Update a team API key",
+        "operationId": "PatchApiKeysApiKeyID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/apiKeyID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTeamAPIKey"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Team API key updated successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "api-keys"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Health check",
+        "operationId": "GetHealth",
+        "responses": {
+          "204": {
+            "description": "The service is healthy"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          }
+        }
+      }
+    },
+    "/nodes": {
+      "get": {
+        "description": "List all nodes",
+        "operationId": "GetNodes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Node"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned all nodes"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AdminTokenAuth": []
+          }
+        ],
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/nodes/{nodeID}": {
+      "get": {
+        "description": "Get node info",
+        "operationId": "GetNodesNodeID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/nodeID"
+          },
+          {
+            "description": "Identifier of the cluster",
+            "in": "query",
+            "name": "clusterID",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeDetail"
+                }
+              }
+            },
+            "description": "Successfully returned the node"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AdminTokenAuth": []
+          }
+        ],
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Change status of a node",
+        "operationId": "PostNodesNodeID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/nodeID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeStatusChange"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "The node status was changed successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AdminTokenAuth": []
+          }
+        ],
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/sandboxes": {
+      "get": {
+        "description": "List all running sandboxes",
+        "operationId": "GetSandboxes",
+        "parameters": [
+          {
+            "description": "Metadata query used to filter the sandboxes (e.g. \"user=abc&app=prod\"). Each key and values must be URL encoded.",
+            "in": "query",
+            "name": "metadata",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ListedSandbox"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned all running sandboxes"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      },
+      "post": {
+        "description": "Create a sandbox from the template",
+        "operationId": "PostSandboxes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSandbox"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "The sandbox was created successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/metrics": {
+      "get": {
+        "description": "List metrics for given sandboxes",
+        "operationId": "GetSandboxesMetrics",
+        "parameters": [
+          {
+            "description": "Comma-separated list of sandbox IDs to get metrics for",
+            "explode": false,
+            "in": "query",
+            "name": "sandbox_ids",
+            "required": true,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array",
+              "uniqueItems": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxesWithMetrics"
+                }
+              }
+            },
+            "description": "Successfully returned all running sandboxes with metrics"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}": {
+      "delete": {
+        "description": "Kill a sandbox",
+        "operationId": "DeleteSandboxesSandboxID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The sandbox was killed successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      },
+      "get": {
+        "description": "Get a sandbox by id",
+        "operationId": "GetSandboxesSandboxID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxDetail"
+                }
+              }
+            },
+            "description": "Successfully returned the sandbox"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/connect": {
+      "post": {
+        "description": "Returns sandbox details. If the sandbox is paused, it will be resumed. TTL is only extended.",
+        "operationId": "PostSandboxesSandboxIDConnect",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectSandbox"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "The sandbox was already running"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "The sandbox was resumed successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/logs": {
+      "get": {
+        "deprecated": true,
+        "description": "Get sandbox logs. Use /v2/sandboxes/{sandboxID}/logs instead.",
+        "operationId": "GetSandboxesSandboxIDLogs",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          },
+          {
+            "description": "Starting timestamp of the logs that should be returned in milliseconds",
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of logs that should be returned",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 1000,
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxLogs"
+                }
+              }
+            },
+            "description": "Successfully returned the sandbox logs"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/metrics": {
+      "get": {
+        "description": "Get sandbox metrics",
+        "operationId": "GetSandboxesSandboxIDMetrics",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          },
+          {
+            "description": "Unix timestamp for the start of the interval, in seconds, for which the metrics",
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "schema": {
+              "description": "Unix timestamp for the end of the interval, in seconds, for which the metrics",
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SandboxMetric"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned the sandbox metrics"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/network": {
+      "put": {
+        "description": "Update the network configuration for a running sandbox. Replaces the current egress rules with the provided configuration. Omitting both fields clears all egress rules.",
+        "operationId": "PutSandboxesSandboxIDNetwork",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "allowOut": {
+                    "description": "List of allowed destinations for egress traffic. Each entry can be a CIDR block (e.g. \"8.8.8.8/32\"), a bare IP address (e.g. \"8.8.8.8\"), or a domain name (e.g. \"example.com\", \"*.example.com\"). Allowed entries always take precedence over denied entries.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "denyOut": {
+                    "description": "List of denied CIDR blocks or IP addresses for egress traffic. Domain names are not supported for deny rules.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successfully updated the sandbox network configuration"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/pause": {
+      "post": {
+        "description": "Pause the sandbox",
+        "operationId": "PostSandboxesSandboxIDPause",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The sandbox was paused successfully and can be resumed"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/refreshes": {
+      "post": {
+        "description": "Refresh the sandbox extending its time to live",
+        "operationId": "PostSandboxesSandboxIDRefreshes",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "duration": {
+                    "description": "Duration for which the sandbox should be kept alive in seconds",
+                    "maximum": 3600,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successfully refreshed the sandbox"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/resume": {
+      "post": {
+        "deprecated": true,
+        "description": "Resume the sandbox",
+        "operationId": "PostSandboxesSandboxIDResume",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumedSandbox"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "The sandbox was resumed successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/snapshots": {
+      "post": {
+        "description": "Create a persistent snapshot from the sandbox's current state. Snapshots can be used to create new sandboxes and persist beyond the original sandbox's lifetime.",
+        "operationId": "PostSandboxesSandboxIDSnapshots",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "name": {
+                    "description": "Optional name for the snapshot template. If a snapshot template with this name already exists, a new build will be assigned to the existing template instead of creating a new one.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotInfo"
+                }
+              }
+            },
+            "description": "Snapshot created successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/sandboxes/{sandboxID}/timeout": {
+      "post": {
+        "description": "Set the timeout for the sandbox. The sandbox will expire x seconds from the time of the request. Calling this method multiple times overwrites the TTL, each time using the current timestamp as the starting point to measure the timeout duration.",
+        "operationId": "PostSandboxesSandboxIDTimeout",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "timeout": {
+                    "description": "Timeout in seconds from the current time after which the sandbox should expire",
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "timeout"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successfully set the sandbox timeout"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/snapshots": {
+      "get": {
+        "description": "List all snapshots for the team",
+        "operationId": "GetSnapshots",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sandboxID",
+            "schema": {
+              "description": "Filter snapshots by source sandbox ID",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/paginationLimit"
+          },
+          {
+            "$ref": "#/components/parameters/paginationNextToken"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SnapshotInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned snapshots"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "snapshots"
+        ]
+      }
+    },
+    "/teams": {
+      "get": {
+        "description": "List all teams",
+        "operationId": "GetTeams",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Team"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned all teams"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": []
+          }
+        ],
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/teams/{teamID}/metrics": {
+      "get": {
+        "description": "Get metrics for the team",
+        "operationId": "GetTeamsTeamIDMetrics",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/teamID"
+          },
+          {
+            "description": "Unix timestamp for the start of the interval, in seconds, for which the metrics",
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "schema": {
+              "description": "Unix timestamp for the end of the interval, in seconds, for which the metrics",
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TeamMetric"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned the team metrics"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/teams/{teamID}/metrics/max": {
+      "get": {
+        "description": "Get the maximum metrics for the team in the given interval",
+        "operationId": "GetTeamsTeamIDMetricsMax",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/teamID"
+          },
+          {
+            "description": "Unix timestamp for the start of the interval, in seconds, for which the metrics",
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "schema": {
+              "description": "Unix timestamp for the end of the interval, in seconds, for which the metrics",
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Metric to retrieve the maximum value for",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "enum": [
+                "concurrent_sandboxes",
+                "sandbox_start_rate"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaxTeamMetric"
+                }
+              }
+            },
+            "description": "Successfully returned the team metrics"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/templates": {
+      "get": {
+        "description": "List all templates",
+        "operationId": "GetTemplates",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "teamID",
+            "schema": {
+              "description": "Identifier of the team",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Template"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned all templates"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      },
+      "post": {
+        "deprecated": true,
+        "description": "Create a new template",
+        "operationId": "PostTemplates",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateBuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateLegacy"
+                }
+              }
+            },
+            "description": "The build was accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/aliases/{alias}": {
+      "get": {
+        "description": "Check if template with given alias exists",
+        "operationId": "GetTemplatesAliasesAlias",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alias",
+            "required": true,
+            "schema": {
+              "description": "Template alias",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateAliasResponse"
+                }
+              }
+            },
+            "description": "Successfully queried template by alias"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/tags": {
+      "delete": {
+        "description": "Delete multiple tags from templates",
+        "operationId": "DeleteTemplatesTags",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteTemplateTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Tags deleted successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "tags"
+        ]
+      },
+      "post": {
+        "description": "Assign tag(s) to a template build",
+        "operationId": "PostTemplatesTags",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignTemplateTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignedTemplateTags"
+                }
+              }
+            },
+            "description": "Tag assigned successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "tags"
+        ]
+      }
+    },
+    "/templates/{templateID}": {
+      "delete": {
+        "description": "Delete a template",
+        "operationId": "DeleteTemplatesTemplateID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The template was deleted successfully"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      },
+      "get": {
+        "description": "List all builds for a template",
+        "operationId": "GetTemplatesTemplateID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          },
+          {
+            "$ref": "#/components/parameters/paginationNextToken"
+          },
+          {
+            "$ref": "#/components/parameters/paginationLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateWithBuilds"
+                }
+              }
+            },
+            "description": "Successfully returned the template with its builds"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      },
+      "patch": {
+        "deprecated": true,
+        "description": "Update template",
+        "operationId": "PatchTemplatesTemplateID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The template was updated successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      },
+      "post": {
+        "deprecated": true,
+        "description": "Rebuild an template",
+        "operationId": "PostTemplatesTemplateID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateBuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateLegacy"
+                }
+              }
+            },
+            "description": "The build was accepted"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/{templateID}/builds/{buildID}": {
+      "post": {
+        "deprecated": true,
+        "description": "Start the build",
+        "operationId": "PostTemplatesTemplateIDBuildsBuildID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          },
+          {
+            "$ref": "#/components/parameters/buildID"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The build has started"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/{templateID}/builds/{buildID}/logs": {
+      "get": {
+        "description": "Get template build logs",
+        "operationId": "GetTemplatesTemplateIDBuildsBuildIDLogs",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          },
+          {
+            "$ref": "#/components/parameters/buildID"
+          },
+          {
+            "description": "Starting timestamp of the logs that should be returned in milliseconds",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of logs that should be returned",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "schema": {
+              "$ref": "#/components/schemas/LogsDirection"
+            }
+          },
+          {
+            "in": "query",
+            "name": "level",
+            "schema": {
+              "$ref": "#/components/schemas/LogLevel"
+            }
+          },
+          {
+            "description": "Source of the logs that should be returned from",
+            "in": "query",
+            "name": "source",
+            "schema": {
+              "$ref": "#/components/schemas/LogsSource"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateBuildLogsResponse"
+                }
+              }
+            },
+            "description": "Successfully returned the template build logs"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/{templateID}/builds/{buildID}/status": {
+      "get": {
+        "description": "Get template build info",
+        "operationId": "GetTemplatesTemplateIDBuildsBuildIDStatus",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          },
+          {
+            "$ref": "#/components/parameters/buildID"
+          },
+          {
+            "description": "Index of the starting build log that should be returned with the template",
+            "in": "query",
+            "name": "logsOffset",
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of logs that should be returned",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "level",
+            "schema": {
+              "$ref": "#/components/schemas/LogLevel"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateBuildInfo"
+                }
+              }
+            },
+            "description": "Successfully returned the template"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/{templateID}/files/{hash}": {
+      "get": {
+        "description": "Get an upload link for a tar file containing build layer files",
+        "operationId": "GetTemplatesTemplateIDFilesHash",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          },
+          {
+            "in": "path",
+            "name": "hash",
+            "required": true,
+            "schema": {
+              "description": "Hash of the files",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateBuildFileUpload"
+                }
+              }
+            },
+            "description": "The upload link where to upload the tar file"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/templates/{templateID}/tags": {
+      "get": {
+        "description": "List all tags for a template",
+        "operationId": "GetTemplatesTemplateIDTags",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TemplateTag"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned the template tags"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "tags"
+        ]
+      }
+    },
+    "/v2/sandboxes": {
+      "get": {
+        "description": "List all sandboxes",
+        "operationId": "GetV2Sandboxes",
+        "parameters": [
+          {
+            "description": "Metadata query used to filter the sandboxes (e.g. \"user=abc&app=prod\"). Each key and values must be URL encoded.",
+            "in": "query",
+            "name": "metadata",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter sandboxes by one or more states",
+            "explode": false,
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "items": {
+                "$ref": "#/components/schemas/SandboxState"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "$ref": "#/components/parameters/paginationNextToken"
+          },
+          {
+            "$ref": "#/components/parameters/paginationLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ListedSandbox"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully returned all running sandboxes"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/v2/sandboxes/{sandboxID}/logs": {
+      "get": {
+        "description": "Get sandbox logs",
+        "operationId": "GetV2SandboxesSandboxIDLogs",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/sandboxID"
+          },
+          {
+            "description": "Starting timestamp of the logs that should be returned in milliseconds",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of logs that should be returned",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 1000,
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Direction of the logs that should be returned",
+            "in": "query",
+            "name": "direction",
+            "schema": {
+              "$ref": "#/components/schemas/LogsDirection"
+            }
+          },
+          {
+            "description": "Minimum log level to return. Logs below this level are excluded",
+            "in": "query",
+            "name": "level",
+            "schema": {
+              "$ref": "#/components/schemas/LogLevel"
+            }
+          },
+          {
+            "description": "Case-sensitive substring match on log message content",
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxLogsV2Response"
+                }
+              }
+            },
+            "description": "Successfully returned the sandbox logs"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "sandboxes"
+        ]
+      }
+    },
+    "/v2/templates": {
+      "post": {
+        "deprecated": true,
+        "description": "Create a new template",
+        "operationId": "PostV2Templates",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateBuildRequestV2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateLegacy"
+                }
+              }
+            },
+            "description": "The build was requested successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/v2/templates/{templateID}": {
+      "patch": {
+        "description": "Update template",
+        "operationId": "PatchV2TemplatesTemplateID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateUpdateResponse"
+                }
+              }
+            },
+            "description": "The template was updated successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "AccessTokenAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/v2/templates/{templateID}/builds/{buildID}": {
+      "post": {
+        "description": "Start the build",
+        "operationId": "PostV2TemplatesTemplateIDBuildsBuildID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/templateID"
+          },
+          {
+            "$ref": "#/components/parameters/buildID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateBuildStartV2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The build has started"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/v3/templates": {
+      "post": {
+        "description": "Create a new template",
+        "operationId": "PostV3Templates",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateBuildRequestV3"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateRequestResponseV3"
+                }
+              }
+            },
+            "description": "The build was requested successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/volumes": {
+      "get": {
+        "description": "List all team volumes",
+        "operationId": "GetVolumes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Volume"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successfully listed all team volumes"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "volumes"
+        ]
+      },
+      "post": {
+        "description": "Create a new team volume",
+        "operationId": "PostVolumes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewVolume"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeAndToken"
+                }
+              }
+            },
+            "description": "Successfully created a new team volume"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "volumes"
+        ]
+      }
+    },
+    "/volumes/{volumeID}": {
+      "delete": {
+        "description": "Delete a team volume",
+        "operationId": "DeleteVolumesVolumeID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/volumeID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successfully deleted a team volume"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "volumes"
+        ]
+      },
+      "get": {
+        "description": "Get team volume info",
+        "operationId": "GetVolumesVolumeID",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/volumeID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeAndToken"
+                }
+              }
+            },
+            "description": "Successfully retrieved a team volume"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "Supabase1TokenAuth": [],
+            "Supabase2TeamAuth": []
+          }
+        ],
+        "tags": [
+          "volumes"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.e2b.app"
+    }
+  ],
+  "tags": [
+    {
+      "name": "templates"
+    },
+    {
+      "name": "sandboxes"
+    },
+    {
+      "name": "auth"
+    },
+    {
+      "name": "access-tokens"
+    },
+    {
+      "name": "api-keys"
+    },
+    {
+      "name": "tags"
+    },
+    {
+      "name": "volumes"
+    }
+  ]
+}

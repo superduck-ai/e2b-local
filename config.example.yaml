@@ -1,0 +1,35 @@
+server:
+  addr: "127.0.0.1:3000"
+
+runtime:
+  # docker: create one OrbStack/Docker container per sandbox.
+  # orbstack: create one OrbStack VM per sandbox and run envd inside the machine.
+  type: "docker"
+
+docker:
+  # Omit host to use DOCKER_HOST, the current user's OrbStack socket when present, or unix:///var/run/docker.sock.
+  # host: "unix:///var/run/docker.sock"
+  # Docker templates are discovered from tagged local Docker images. Pull or build images before use.
+  # Optional platform override. Empty means let Docker choose, then inspect the selected image.
+  # platform: "linux/amd64"
+  container_name_prefix: "e2b-envd-"
+  # Optional envd override. Empty means choose envd-bin/envd-linux-amd64 or envd-bin/envd-linux-arm64 from the image architecture.
+  # envd_binary: "envd-bin/envd-linux-amd64"
+  # envd runs on container port 49983; Docker assigns a dynamic localhost host port per sandbox.
+  health_timeout_seconds: 30
+
+orbstack:
+  orb_binary: "/usr/local/bin/orb"
+  machine_name_prefix: "e2b-sandbox-"
+  default_memory: "2G"
+  default_cpus: "2"
+  default_disk: "16G"
+  # When true, sandbox VMs run as OrbStack isolated machines and no longer see the full macOS filesystem.
+  # In isolated mode, each sandbox volume is exposed through a selective host mount only.
+  isolated: false
+  # Local Linux envd binary used for sandbox envd bootstrap.
+  # The gateway copies it into each sandbox VM before enabling the envd service.
+  envd_binary: "envd-bin/envd-linux-arm64"
+  envd_port: 49983
+  health_timeout_seconds: 60
+  volume_host_path: "~/.e2b-local/volumes"
