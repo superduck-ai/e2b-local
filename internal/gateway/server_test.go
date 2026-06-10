@@ -322,6 +322,44 @@ func TestListSandboxesReconcilesMissingRuntimeSandbox(t *testing.T) {
 	}
 }
 
+func TestReconcileMissingSandboxDeletesRuntimeContainer(t *testing.T) {
+	runtime := &recordingRuntime{}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewBufferString(`{"templateID":"base"}`))
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created SandboxResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	runtime.inspectResults = map[string]SandboxRuntimeInspection{
+		"ctr-" + created.SandboxID: {Exists: false},
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v2/sandboxes", nil)
+	listRec := httptest.NewRecorder()
+	app.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+
+	if len(runtime.deleteInfos) != 1 {
+		t.Fatalf("expected runtime DeleteSandbox to be called for missing container, got %d calls", len(runtime.deleteInfos))
+	}
+	if runtime.deleteInfos[0].ContainerID != "ctr-"+created.SandboxID {
+		t.Fatalf("expected runtime delete of container %q, got %q", "ctr-"+created.SandboxID, runtime.deleteInfos[0].ContainerID)
+	}
+}
+
 func TestListSandboxesReconcilesRuntimePausedState(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
