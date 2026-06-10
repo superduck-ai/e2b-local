@@ -5,8 +5,6 @@ runtime:
   type: "orbstack"
 
 orbstack:
-  orb_binary: "/usr/local/bin/orb"
-
   # Sandboxes created by the gateway will be named <machine_name_prefix><sandboxID>.
   # Existing OrbStack machines whose names DO NOT start with this prefix are exposed as templates.
   machine_name_prefix: "e2b-sandbox-"

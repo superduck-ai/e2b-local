@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	volumeMetadataXAttrName       = "com.e2b.volume-meta"
-	legacyVolumeMetadataXAttrName = "com.e2b.gateway.volume-meta"
+	volumeMetadataXAttrName         = "com.e2b.local.volume-meta"
+	previousVolumeMetadataXAttrName = "com.e2b.volume-meta"
 )
 
 func writeVolumeMetadata(hostDir string, volume RuntimeVolume) error {
@@ -25,7 +25,7 @@ func writeVolumeMetadata(hostDir string, volume RuntimeVolume) error {
 	if err := unix.Setxattr(hostDir, volumeMetadataXAttrName, data, 0); err != nil {
 		return fmt.Errorf("set volume metadata xattr %s: %w", volume.VolumeID, err)
 	}
-	if err := unix.Removexattr(hostDir, legacyVolumeMetadataXAttrName); err != nil && !isMissingVolumeMetadataXAttr(err) {
+	if err := unix.Removexattr(hostDir, previousVolumeMetadataXAttrName); err != nil && !isMissingVolumeMetadataXAttr(err) {
 		return fmt.Errorf("remove legacy volume metadata xattr %s: %w", volume.VolumeID, err)
 	}
 	if err := os.Remove(volumeHostMetadataPath(hostDir)); err != nil && !os.IsNotExist(err) {
@@ -43,7 +43,7 @@ func readVolumeMetadata(hostDir string) (RuntimeVolume, error) {
 		return RuntimeVolume{}, err
 	}
 
-	data, err = readVolumeMetadataXAttr(hostDir, legacyVolumeMetadataXAttrName)
+	data, err = readVolumeMetadataXAttr(hostDir, previousVolumeMetadataXAttrName)
 	if err == nil {
 		volume, err := decodeVolumeMetadata(filepath.Base(hostDir), data)
 		if err != nil {

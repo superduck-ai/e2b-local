@@ -178,7 +178,7 @@ Implemented capabilities include:
 - E2B sandbox lifecycle APIs: create, list, get, kill, pause, resume, connect, and logs.
 - Template, build, volume, snapshot, and metrics resource endpoints.
 - Docker runtime for creating, pausing, resuming, deleting, restoring, logging, and collecting stats from real containers.
-- OrbStack runtime for cloning/starting/stopping/deleting VMs, installing `envd` as a systemd service, managing volume mounts, and creating snapshots with `orb clone`.
+- OrbStack runtime for cloning/starting/stopping/deleting VMs through OrbStack sockets, installing `envd` as a systemd service, managing volume mounts, and creating snapshots without shelling out to the OrbStack CLI.
 
 ## Repository Layout
 
@@ -274,7 +274,7 @@ In Docker runtime:
 - `pause` and `connect` map to Docker pause/unpause.
 - envd listens on container port `49983`; Docker publishes a separate localhost host port for each sandbox automatically.
 - Templates are resolved from local tagged Docker images, or from a full image reference passed as `templateID`. The image must already exist locally.
-- The gateway stores non-sensitive runtime metadata in `e2b.gateway.*` container labels and restores running/paused sandboxes after process restart.
+- The gateway stores non-sensitive runtime metadata in `e2b.local.*` container labels and restores running/paused sandboxes after process restart.
 - The selected envd binary is mounted at `/usr/local/bin/envd`.
 - Requested E2B volumes use Docker native named volumes.
 - Sandbox responses return the direct runtime `envdURL` assigned by Docker.
@@ -302,7 +302,6 @@ runtime:
   type: "orbstack"
 
 orbstack:
-  orb_binary: "/usr/local/bin/orb"
   machine_name_prefix: "e2b-sandbox-"
   envd_binary: "envd-bin/envd-linux-arm64"
   envd_port: 49983
@@ -318,7 +317,7 @@ In OrbStack runtime:
 - Sandbox envd URLs prefer the VM IP and fixed `envd_port`.
 - `orbstack.isolated: true` prevents sandbox VMs from seeing the full macOS filesystem.
 - Volumes are exposed through OrbStack selective mounts and symlinked to the requested paths inside the VM.
-- Snapshots are created with `orb clone`.
+- Snapshots are created by cloning the VM through OrbStack's socket RPC.
 
 ## Tests
 

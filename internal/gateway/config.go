@@ -17,7 +17,6 @@ const (
 	defaultRuntimeType                = "docker"
 	defaultDockerContainerNamePrefix  = "e2b-envd-"
 	defaultDockerHealthTimeoutSeconds = 30
-	defaultOrbstackOrbBinary          = "/usr/local/bin/orb"
 	defaultOrbstackMachineNamePrefix  = "e2b-sandbox-"
 	defaultOrbstackDefaultMemory      = "2G"
 	defaultOrbstackDefaultCPUs        = "2"
@@ -51,7 +50,6 @@ type DockerRuntimeConfig struct {
 }
 
 type OrbstackRuntimeConfig struct {
-	OrbBinary            string                            `yaml:"orb_binary"`
 	MachineNamePrefix    string                            `yaml:"machine_name_prefix"`
 	DefaultMemory        string                            `yaml:"default_memory"`
 	DefaultCPUs          string                            `yaml:"default_cpus"`
@@ -86,7 +84,6 @@ func DefaultConfig() Config {
 			HealthTimeoutSeconds: defaultDockerHealthTimeoutSeconds,
 		},
 		Orbstack: OrbstackRuntimeConfig{
-			OrbBinary:            defaultOrbstackOrbBinary,
 			MachineNamePrefix:    defaultOrbstackMachineNamePrefix,
 			DefaultMemory:        defaultOrbstackDefaultMemory,
 			DefaultCPUs:          defaultOrbstackDefaultCPUs,
@@ -283,9 +280,6 @@ func (c DockerRuntimeConfig) Validate() error {
 }
 
 func (c OrbstackRuntimeConfig) Validate() error {
-	if strings.TrimSpace(c.OrbBinary) == "" {
-		return fmt.Errorf("orbstack.orb_binary is required")
-	}
 	if strings.TrimSpace(c.MachineNamePrefix) == "" {
 		return fmt.Errorf("orbstack.machine_name_prefix is required")
 	}

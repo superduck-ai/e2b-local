@@ -44,15 +44,12 @@ func TestCreateVolumeStoresMetadataInNewXAttrWithoutToken(t *testing.T) {
 	if bytes.Contains(data, []byte(`"Token"`)) {
 		t.Fatalf("expected xattr metadata without token, got %s", data)
 	}
-	if bytes.Contains(data, []byte(`com.e2b.gateway.volume-meta`)) {
-		t.Fatalf("unexpected legacy xattr marker in metadata %s", data)
-	}
-	if _, err := readVolumeMetadataXAttr(resolved.HostDir, legacyVolumeMetadataXAttrName); !isMissingVolumeMetadataXAttr(err) {
-		t.Fatalf("expected legacy xattr key to be absent, got err=%v", err)
+	if _, err := readVolumeMetadataXAttr(resolved.HostDir, previousVolumeMetadataXAttrName); !isMissingVolumeMetadataXAttr(err) {
+		t.Fatalf("expected previous xattr key to be absent, got err=%v", err)
 	}
 }
 
-func TestReadVolumeMetadataMigratesLegacyXAttrKeyAndDropsToken(t *testing.T) {
+func TestReadVolumeMetadataMigratesPreviousXAttrKeyAndDropsToken(t *testing.T) {
 	hostPath := t.TempDir()
 	hostDir := volumeBaseDir(OrbstackRuntimeConfig{VolumeHostPath: hostPath}, "legacy-data")
 	if err := os.MkdirAll(hostDir, 0o755); err != nil {
@@ -60,8 +57,8 @@ func TestReadVolumeMetadataMigratesLegacyXAttrKeyAndDropsToken(t *testing.T) {
 	}
 
 	legacyData := []byte(`{"VolumeID":"vol-legacy","Name":"legacy-data","Token":"token-legacy"}`)
-	if err := unix.Setxattr(hostDir, legacyVolumeMetadataXAttrName, legacyData, 0); err != nil {
-		t.Fatalf("set legacy xattr: %v", err)
+	if err := unix.Setxattr(hostDir, previousVolumeMetadataXAttrName, legacyData, 0); err != nil {
+		t.Fatalf("set previous xattr: %v", err)
 	}
 
 	volume, err := readVolumeMetadata(hostDir)
@@ -79,7 +76,7 @@ func TestReadVolumeMetadataMigratesLegacyXAttrKeyAndDropsToken(t *testing.T) {
 	if bytes.Contains(data, []byte(`"Token"`)) {
 		t.Fatalf("expected migrated xattr without token, got %s", data)
 	}
-	if _, err := readVolumeMetadataXAttr(hostDir, legacyVolumeMetadataXAttrName); !isMissingVolumeMetadataXAttr(err) {
-		t.Fatalf("expected legacy xattr key to be removed, got err=%v", err)
+	if _, err := readVolumeMetadataXAttr(hostDir, previousVolumeMetadataXAttrName); !isMissingVolumeMetadataXAttr(err) {
+		t.Fatalf("expected previous xattr key to be removed, got err=%v", err)
 	}
 }

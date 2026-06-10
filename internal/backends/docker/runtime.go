@@ -61,28 +61,28 @@ const defaultSandboxTimeoutSeconds = gateway.DefaultSandboxTimeoutSeconds
 const maxSandboxListLimit = gateway.MaxSandboxListLimit
 
 const (
-	dockerGatewayManagedLabel               = "e2b.gateway.managed"
-	dockerGatewaySnapshotLabel              = "e2b.gateway.snapshot"
-	dockerGatewaySnapshotSourceSandboxLabel = "e2b.gateway.snapshot.source_sandbox_id"
-	dockerGatewaySnapshotNameLabel          = "e2b.gateway.snapshot.name"
-	dockerGatewaySnapshotRefLabel           = "e2b.gateway.snapshot.ref"
-	dockerGatewaySnapshotCreatedAtLabel     = "e2b.gateway.snapshot.created_at"
-	dockerGatewayImageLabel                 = "e2b.gateway.image"
-	dockerGatewaySandboxIDLabel             = "e2b.gateway.sandbox_id"
-	dockerGatewaySandboxTemplateIDLabel     = "e2b.gateway.template_id"
-	dockerGatewaySandboxCreatedAtLabel      = "e2b.gateway.sandbox.created_at"
-	dockerGatewaySandboxEndAtLabel          = "e2b.gateway.sandbox.end_at"
-	dockerGatewaySandboxMetadataLabel       = "e2b.gateway.sandbox.metadata"
-	dockerGatewaySandboxAllowInternetLabel  = "e2b.gateway.sandbox.allow_internet_access"
-	dockerGatewaySandboxVolumeMountsLabel   = "e2b.gateway.sandbox.volume_mounts"
-	dockerGatewayTemplateLabel              = "e2b.gateway.template"
-	dockerGatewayTemplateIDLabel            = "e2b.gateway.template_id"
-	dockerGatewayTemplateNamesLabel         = "e2b.gateway.template.names"
-	dockerGatewayTemplateBuildIDLabel       = "e2b.gateway.template.build_id"
-	dockerGatewayTemplateCPUCountLabel      = "e2b.gateway.template.cpu_count"
-	dockerGatewayTemplateMemoryMBLabel      = "e2b.gateway.template.memory_mb"
-	dockerGatewayTemplateStartCmdLabel      = "e2b.gateway.template.start_cmd"
-	dockerGatewayTemplateReadyCmdLabel      = "e2b.gateway.template.ready_cmd"
+	dockerLocalManagedLabel               = "e2b.local.managed"
+	dockerLocalSnapshotLabel              = "e2b.local.snapshot"
+	dockerLocalSnapshotSourceSandboxLabel = "e2b.local.snapshot.source_sandbox_id"
+	dockerLocalSnapshotNameLabel          = "e2b.local.snapshot.name"
+	dockerLocalSnapshotRefLabel           = "e2b.local.snapshot.ref"
+	dockerLocalSnapshotCreatedAtLabel     = "e2b.local.snapshot.created_at"
+	dockerLocalImageLabel                 = "e2b.local.image"
+	dockerLocalSandboxIDLabel             = "e2b.local.sandbox_id"
+	dockerLocalSandboxTemplateIDLabel     = "e2b.local.template_id"
+	dockerLocalSandboxCreatedAtLabel      = "e2b.local.sandbox.created_at"
+	dockerLocalSandboxEndAtLabel          = "e2b.local.sandbox.end_at"
+	dockerLocalSandboxMetadataLabel       = "e2b.local.sandbox.metadata"
+	dockerLocalSandboxAllowInternetLabel  = "e2b.local.sandbox.allow_internet_access"
+	dockerLocalSandboxVolumeMountsLabel   = "e2b.local.sandbox.volume_mounts"
+	dockerLocalTemplateLabel              = "e2b.local.template"
+	dockerLocalTemplateIDLabel            = "e2b.local.template_id"
+	dockerLocalTemplateNamesLabel         = "e2b.local.template.names"
+	dockerLocalTemplateBuildIDLabel       = "e2b.local.template.build_id"
+	dockerLocalTemplateCPUCountLabel      = "e2b.local.template.cpu_count"
+	dockerLocalTemplateMemoryMBLabel      = "e2b.local.template.memory_mb"
+	dockerLocalTemplateStartCmdLabel      = "e2b.local.template.start_cmd"
+	dockerLocalTemplateReadyCmdLabel      = "e2b.local.template.ready_cmd"
 )
 
 type DockerRuntime struct {
@@ -199,7 +199,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 			User:         "root",
 			Env:          envVars(req.EnvVars),
 			Entrypoint:   []string{dockerEnvdPath},
-			Cmd:          r.containerCommand(imageLabels[dockerGatewayTemplateStartCmdLabel]),
+			Cmd:          r.containerCommand(imageLabels[dockerLocalTemplateStartCmdLabel]),
 			ExposedPorts: nat.PortSet{envdPort: struct{}{}},
 			Labels:       dockerSandboxLabels(labelReq, templateID, imageRef),
 		},
@@ -247,7 +247,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 		return SandboxRuntimeInfo{}, err
 	}
 
-	if err := r.waitReadyCommand(ctx, resp.ID, imageLabels[dockerGatewayTemplateReadyCmdLabel]); err != nil {
+	if err := r.waitReadyCommand(ctx, resp.ID, imageLabels[dockerLocalTemplateReadyCmdLabel]); err != nil {
 		logs := r.containerLogs(context.Background(), resp.ID)
 		_ = r.removeContainer(context.Background(), resp.ID)
 		if logs != "" {
@@ -377,8 +377,8 @@ func (r *DockerRuntime) RestoreSandboxes(ctx context.Context) ([]SandboxRecord, 
 	containers, err := r.client.ContainerList(ctx, container.ListOptions{
 		All: true,
 		Filters: filters.NewArgs(
-			filters.Arg("label", dockerGatewayManagedLabel+"=true"),
-			filters.Arg("label", dockerGatewaySandboxIDLabel),
+			filters.Arg("label", dockerLocalManagedLabel+"=true"),
+			filters.Arg("label", dockerLocalSandboxIDLabel),
 		),
 	})
 	if err != nil {
@@ -413,7 +413,7 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 	}
 
 	labels := dockerContainerLabels(summary.Labels, inspect.Config)
-	sandboxID := strings.TrimSpace(labels[dockerGatewaySandboxIDLabel])
+	sandboxID := strings.TrimSpace(labels[dockerLocalSandboxIDLabel])
 	if sandboxID == "" {
 		return SandboxRecord{}, false, nil
 	}
@@ -444,9 +444,9 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 		return SandboxRecord{}, false, err
 	}
 
-	createdAt := dockerTimeLabel(labels[dockerGatewaySandboxCreatedAtLabel], dockerImageCreatedAt(inspect.Created, now))
-	endAt := dockerTimeLabel(labels[dockerGatewaySandboxEndAtLabel], now.Add(time.Duration(defaultSandboxTimeoutSeconds)*time.Second))
-	templateID := strings.TrimSpace(labels[dockerGatewaySandboxTemplateIDLabel])
+	createdAt := dockerTimeLabel(labels[dockerLocalSandboxCreatedAtLabel], dockerImageCreatedAt(inspect.Created, now))
+	endAt := dockerTimeLabel(labels[dockerLocalSandboxEndAtLabel], now.Add(time.Duration(defaultSandboxTimeoutSeconds)*time.Second))
+	templateID := strings.TrimSpace(labels[dockerLocalSandboxTemplateIDLabel])
 	if templateID == "" {
 		templateID = dockerTemplateName(summary.Image)
 	}
@@ -454,13 +454,13 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 	return SandboxRecord{
 		ID:                  sandboxID,
 		TemplateID:          templateID,
-		Metadata:            dockerStringMapLabel(labels[dockerGatewaySandboxMetadataLabel]),
+		Metadata:            dockerStringMapLabel(labels[dockerLocalSandboxMetadataLabel]),
 		EnvdURL:             info.EnvdURL,
 		RuntimeInfo:         info,
 		CreatedAt:           createdAt,
 		EndAt:               endAt,
 		State:               state,
-		AllowInternetAccess: dockerBoolPtrLabel(labels[dockerGatewaySandboxAllowInternetLabel]),
+		AllowInternetAccess: dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel]),
 	}, true, nil
 }
 
@@ -554,10 +554,10 @@ func (r *DockerRuntime) buildTemplateFromDockerfile(ctx context.Context, templat
 	}
 	labels := dockerTemplateLabels(template)
 	if strings.TrimSpace(opts.StartCmd) != "" {
-		labels[dockerGatewayTemplateStartCmdLabel] = strings.TrimSpace(opts.StartCmd)
+		labels[dockerLocalTemplateStartCmdLabel] = strings.TrimSpace(opts.StartCmd)
 	}
 	if strings.TrimSpace(opts.ReadyCmd) != "" {
-		labels[dockerGatewayTemplateReadyCmdLabel] = strings.TrimSpace(opts.ReadyCmd)
+		labels[dockerLocalTemplateReadyCmdLabel] = strings.TrimSpace(opts.ReadyCmd)
 	}
 
 	resp, err := r.client.ImageBuild(ctx, buildContext, dockertypes.ImageBuildOptions{
@@ -663,14 +663,14 @@ func (r *DockerRuntime) CreateSandboxSnapshot(ctx context.Context, record Sandbo
 	createdAt := time.Now().UTC()
 	ref := dockerSnapshotReference(record.ID, name, createdAt)
 	changes := []string{
-		"LABEL " + dockerGatewayManagedLabel + "=true",
-		"LABEL " + dockerGatewaySnapshotLabel + "=true",
-		"LABEL " + dockerGatewaySnapshotSourceSandboxLabel + "=" + record.ID,
-		"LABEL " + dockerGatewaySnapshotRefLabel + "=" + ref,
-		"LABEL " + dockerGatewaySnapshotCreatedAtLabel + "=" + strconv.FormatInt(createdAt.Unix(), 10),
+		"LABEL " + dockerLocalManagedLabel + "=true",
+		"LABEL " + dockerLocalSnapshotLabel + "=true",
+		"LABEL " + dockerLocalSnapshotSourceSandboxLabel + "=" + record.ID,
+		"LABEL " + dockerLocalSnapshotRefLabel + "=" + ref,
+		"LABEL " + dockerLocalSnapshotCreatedAtLabel + "=" + strconv.FormatInt(createdAt.Unix(), 10),
 	}
 	if name != "" {
-		changes = append(changes, "LABEL "+dockerGatewaySnapshotNameLabel+"="+name)
+		changes = append(changes, "LABEL "+dockerLocalSnapshotNameLabel+"="+name)
 	}
 
 	if _, err := r.client.ContainerCommit(ctx, record.RuntimeInfo.ContainerID, container.CommitOptions{
@@ -690,9 +690,9 @@ func (r *DockerRuntime) CreateSandboxSnapshot(ctx context.Context, record Sandbo
 }
 
 func (r *DockerRuntime) ListSnapshots(ctx context.Context, req SnapshotListRequest) ([]e2bapi.SnapshotInfo, error) {
-	args := filters.NewArgs(filters.Arg("label", dockerGatewaySnapshotLabel+"=true"))
+	args := filters.NewArgs(filters.Arg("label", dockerLocalSnapshotLabel+"=true"))
 	if strings.TrimSpace(req.SandboxID) != "" {
-		args.Add("label", dockerGatewaySnapshotSourceSandboxLabel+"="+strings.TrimSpace(req.SandboxID))
+		args.Add("label", dockerLocalSnapshotSourceSandboxLabel+"="+strings.TrimSpace(req.SandboxID))
 	}
 
 	images, err := r.client.ImageList(ctx, image.ListOptions{
@@ -825,7 +825,7 @@ func (r *DockerRuntime) listDockerTemplates(ctx context.Context) (map[string]San
 
 	refsByImageRef := make(map[string]dockerImageRefSummary)
 	for _, img := range images {
-		if img.Labels[dockerGatewaySnapshotLabel] == "true" {
+		if img.Labels[dockerLocalSnapshotLabel] == "true" {
 			continue
 		}
 		imageRefs := taggedImageRefs(img.RepoTags)
@@ -875,7 +875,7 @@ func (r *DockerRuntime) CreateVolume(ctx context.Context, name string) (RuntimeV
 	volume, err := r.client.VolumeCreate(ctx, dockervolume.CreateOptions{
 		Name: name,
 		Labels: map[string]string{
-			dockerGatewayManagedLabel: "true",
+			dockerLocalManagedLabel: "true",
 		},
 	})
 	if err != nil {
@@ -887,7 +887,7 @@ func (r *DockerRuntime) CreateVolume(ctx context.Context, name string) (RuntimeV
 
 func (r *DockerRuntime) ListVolumes(ctx context.Context) ([]RuntimeVolume, error) {
 	volumes, err := r.client.VolumeList(ctx, dockervolume.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", dockerGatewayManagedLabel+"=true")),
+		Filters: filters.NewArgs(filters.Arg("label", dockerLocalManagedLabel+"=true")),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list docker volumes: %w", err)
@@ -956,7 +956,7 @@ func runtimeVolumeFromDockerVolume(volume dockervolume.Volume) RuntimeVolume {
 }
 
 func isManagedDockerVolume(volume dockervolume.Volume) bool {
-	return volume.Labels[dockerGatewayManagedLabel] == "true"
+	return volume.Labels[dockerLocalManagedLabel] == "true"
 }
 
 func isDockerImageReference(ref string) bool {
@@ -1236,13 +1236,13 @@ func safeBuildContextTarName(name string) (string, bool) {
 
 func dockerTemplateLabels(template GatewayTemplate) map[string]string {
 	labels := map[string]string{
-		dockerGatewayManagedLabel:          "true",
-		dockerGatewayTemplateLabel:         "true",
-		dockerGatewayTemplateIDLabel:       template.TemplateID,
-		dockerGatewayTemplateNamesLabel:    strings.Join(appendUniqueStrings(template.Names, template.TemplateID), ","),
-		dockerGatewayTemplateBuildIDLabel:  template.BuildID,
-		dockerGatewayTemplateCPUCountLabel: strconv.Itoa(int(template.CpuCount)),
-		dockerGatewayTemplateMemoryMBLabel: strconv.Itoa(int(template.MemoryMB)),
+		dockerLocalManagedLabel:          "true",
+		dockerLocalTemplateLabel:         "true",
+		dockerLocalTemplateIDLabel:       template.TemplateID,
+		dockerLocalTemplateNamesLabel:    strings.Join(appendUniqueStrings(template.Names, template.TemplateID), ","),
+		dockerLocalTemplateBuildIDLabel:  template.BuildID,
+		dockerLocalTemplateCPUCountLabel: strconv.Itoa(int(template.CpuCount)),
+		dockerLocalTemplateMemoryMBLabel: strconv.Itoa(int(template.MemoryMB)),
 	}
 	for key, value := range labels {
 		if strings.TrimSpace(value) == "" {
@@ -1254,25 +1254,25 @@ func dockerTemplateLabels(template GatewayTemplate) map[string]string {
 
 func dockerSandboxLabels(req SandboxRuntimeCreateRequest, templateID string, imageRef string) map[string]string {
 	labels := map[string]string{
-		dockerGatewayManagedLabel:           "true",
-		dockerGatewayImageLabel:             imageRef,
-		dockerGatewaySandboxIDLabel:         req.SandboxID,
-		dockerGatewaySandboxTemplateIDLabel: templateID,
+		dockerLocalManagedLabel:           "true",
+		dockerLocalImageLabel:             imageRef,
+		dockerLocalSandboxIDLabel:         req.SandboxID,
+		dockerLocalSandboxTemplateIDLabel: templateID,
 	}
 	if !req.CreatedAt.IsZero() {
-		labels[dockerGatewaySandboxCreatedAtLabel] = req.CreatedAt.UTC().Format(time.RFC3339Nano)
+		labels[dockerLocalSandboxCreatedAtLabel] = req.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if !req.EndAt.IsZero() {
-		labels[dockerGatewaySandboxEndAtLabel] = req.EndAt.UTC().Format(time.RFC3339Nano)
+		labels[dockerLocalSandboxEndAtLabel] = req.EndAt.UTC().Format(time.RFC3339Nano)
 	}
 	if len(req.Metadata) > 0 {
-		labels[dockerGatewaySandboxMetadataLabel] = dockerJSONLabel(req.Metadata)
+		labels[dockerLocalSandboxMetadataLabel] = dockerJSONLabel(req.Metadata)
 	}
 	if len(req.VolumeMounts) > 0 {
-		labels[dockerGatewaySandboxVolumeMountsLabel] = dockerJSONLabel(req.VolumeMounts)
+		labels[dockerLocalSandboxVolumeMountsLabel] = dockerJSONLabel(req.VolumeMounts)
 	}
 	if req.AllowInternetAccess != nil {
-		labels[dockerGatewaySandboxAllowInternetLabel] = strconv.FormatBool(*req.AllowInternetAccess)
+		labels[dockerLocalSandboxAllowInternetLabel] = strconv.FormatBool(*req.AllowInternetAccess)
 	}
 	for key, value := range labels {
 		if strings.TrimSpace(value) == "" {
@@ -1340,7 +1340,7 @@ func dockerBoolPtrLabel(value string) *bool {
 }
 
 func dockerVolumeMountsFromLabels(labels map[string]string) []VolumeMount {
-	value := strings.TrimSpace(labels[dockerGatewaySandboxVolumeMountsLabel])
+	value := strings.TrimSpace(labels[dockerLocalSandboxVolumeMountsLabel])
 	if value == "" {
 		return nil
 	}
@@ -1498,7 +1498,7 @@ func snapshotInfoFromDockerImage(img image.Summary) e2bapi.SnapshotInfo {
 	names := taggedImageRefs(img.RepoTags)
 	snapshotID := ""
 	if img.Labels != nil {
-		snapshotID = strings.TrimSpace(img.Labels[dockerGatewaySnapshotRefLabel])
+		snapshotID = strings.TrimSpace(img.Labels[dockerLocalSnapshotRefLabel])
 	}
 	if snapshotID == "" && len(names) > 0 {
 		snapshotID = names[0]
@@ -1527,16 +1527,16 @@ func templateFromDockerImage(templateID string, imageRef string, img image.Summa
 	}
 
 	labels := img.Labels
-	if labelTemplateID := strings.TrimSpace(labels[dockerGatewayTemplateIDLabel]); labelTemplateID != "" {
+	if labelTemplateID := strings.TrimSpace(labels[dockerLocalTemplateIDLabel]); labelTemplateID != "" {
 		templateID = labelTemplateID
 	}
-	names := appendUniqueStrings([]string{templateID}, splitDockerLabelList(labels[dockerGatewayTemplateNamesLabel])...)
+	names := appendUniqueStrings([]string{templateID}, splitDockerLabelList(labels[dockerLocalTemplateNamesLabel])...)
 	buildID := shortDockerImageID(img.ID)
-	if labelBuildID := strings.TrimSpace(labels[dockerGatewayTemplateBuildIDLabel]); labelBuildID != "" {
+	if labelBuildID := strings.TrimSpace(labels[dockerLocalTemplateBuildIDLabel]); labelBuildID != "" {
 		buildID = labelBuildID
 	}
-	cpuCount := dockerLabelInt(labels[dockerGatewayTemplateCPUCountLabel], 1)
-	memoryMB := dockerLabelInt(labels[dockerGatewayTemplateMemoryMBLabel], 512)
+	cpuCount := dockerLabelInt(labels[dockerLocalTemplateCPUCountLabel], 1)
+	memoryMB := dockerLabelInt(labels[dockerLocalTemplateMemoryMBLabel], 512)
 
 	return SandboxRuntimeTemplate{
 		TemplateID:  templateID,

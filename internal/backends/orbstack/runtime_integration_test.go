@@ -146,7 +146,8 @@ func runOrbstackVolumeMountPersistenceTest(t *testing.T, cfg OrbstackRuntimeConf
 		}
 	}
 
-	if _, err := runtime.vmClient.RunCommand(ctx, machineNameFromRuntimeInfo(first), []string{"/bin/sh", "-lc", "printf 'volume-persist-ok' > /data/persist.txt"}); err != nil {
+	persistPath := isolatedVolumeSourcePath(volume.VolumeID) + "/persist.txt"
+	if err := runtime.vmClient.WriteFile(ctx, machineNameFromRuntimeInfo(first), persistPath, []byte("volume-persist-ok"), 0o644); err != nil {
 		t.Fatalf("write persisted volume data: %v", err)
 	}
 
@@ -172,7 +173,7 @@ func runOrbstackVolumeMountPersistenceTest(t *testing.T, cfg OrbstackRuntimeConf
 		}
 	})
 
-	output, err := runtime.vmClient.RunCommand(ctx, machineNameFromRuntimeInfo(second), []string{"/bin/sh", "-lc", "cat /data/persist.txt"})
+	output, err := runtime.vmClient.ReadFile(ctx, machineNameFromRuntimeInfo(second), persistPath)
 	if err != nil {
 		t.Fatalf("read persisted volume data: %v", err)
 	}
@@ -202,14 +203,11 @@ func orbstackIntegrationConfig(t *testing.T) OrbstackRuntimeConfig {
 	cfg.MachineNamePrefix = fmt.Sprintf("e2b-it-orb-%d-", time.Now().UTC().UnixNano())
 	cfg.HealthTimeoutSeconds = 120
 
-	if _, err := os.Stat(cfg.OrbBinary); err != nil {
-		t.Skipf("orb binary is unavailable: %v", err)
-	}
 	if _, err := os.Stat(cfg.EnvdBinary); err != nil {
 		t.Skipf("envd binary is unavailable: %v", err)
 	}
 
-	client := NewVMClient(cfg.OrbBinary, log.New(io.Discard, "", 0))
+	client := NewVMClient(log.New(io.Discard, "", 0))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := client.GetVMInfo(ctx, orbstackIntegrationBaseMachine()); err != nil {
@@ -262,7 +260,7 @@ func cleanupOrbstackIntegrationMachines(t *testing.T, cfg OrbstackRuntimeConfig)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	client := NewVMClient(cfg.OrbBinary, log.New(io.Discard, "", 0))
+	client := NewVMClient(log.New(io.Discard, "", 0))
 	vms, err := client.ListVMs(ctx)
 	if err != nil {
 		t.Logf("list orbstack machines for cleanup: %v", err)

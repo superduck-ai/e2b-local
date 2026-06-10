@@ -19,7 +19,6 @@ docker:
   health_timeout_seconds: 30
 
 orbstack:
-  orb_binary: "/usr/local/bin/orb"
   machine_name_prefix: "e2b-sandbox-"
   default_memory: "2G"
   default_cpus: "2"

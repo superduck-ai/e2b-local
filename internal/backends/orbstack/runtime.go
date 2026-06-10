@@ -31,9 +31,10 @@ type VolumeMount = gateway.VolumeMount
 
 const (
 	envdServicePath      = "/etc/systemd/system/envd.service"
+	envdBinaryPath       = "/usr/local/bin/envd"
+	envdServiceWantsPath = "/etc/systemd/system/multi-user.target.wants/envd.service"
 	sandboxMetadataPath  = "/var/lib/e2b-local/sandbox.json"
 	volumeMetadataName   = ".e2b-meta.json"
-	stagedEnvdBinaryPath = "/tmp/e2b-local-envd"
 	maxSandboxListLimit  = gateway.MaxSandboxListLimit
 	minimumProvisionWait = 5 * time.Minute
 )
@@ -79,7 +80,7 @@ func NewOrbstackRuntime(cfg OrbstackRuntimeConfig, logger *log.Logger) (*Orbstac
 
 	runtime := &OrbstackRuntime{
 		cfg:      cfg,
-		vmClient: NewVMClient(cfg.OrbBinary, logger),
+		vmClient: NewVMClient(logger),
 		logger:   logger,
 		httpClient: &http.Client{
 			Timeout: 3 * time.Second,
@@ -148,7 +149,7 @@ func (r *OrbstackRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeC
 		cleanupMachine()
 		return SandboxRuntimeInfo{}, err
 	}
-	if err := r.configureMachine(ctx, info.Name, spec, metadata); err != nil {
+	if err := r.configureMachine(ctx, machineName, spec, metadata); err != nil {
 		cleanupMachine()
 		return SandboxRuntimeInfo{}, err
 	}
@@ -543,9 +544,9 @@ func (r *OrbstackRuntime) DeleteVolume(ctx context.Context, volumeID string) (bo
 }
 
 func (r *OrbstackRuntime) configureMachine(ctx context.Context, machineName string, spec machineProvisionSpec, metadata sandboxMetadata) error {
-	envdSourceExpr, cleanupCommands, err := r.prepareEnvdBinary(ctx, machineName)
+	envdBinary, err := os.ReadFile(r.cfg.EnvdBinary)
 	if err != nil {
-		return err
+		return fmt.Errorf("read envd binary %s: %w", r.cfg.EnvdBinary, err)
 	}
 	service := renderEnvdService(r.cfg, spec.StartCmd, spec.EnvVars)
 	metadataJSON, err := json.Marshal(metadata)
@@ -553,38 +554,58 @@ func (r *OrbstackRuntime) configureMachine(ctx context.Context, machineName stri
 		return fmt.Errorf("encode sandbox metadata: %w", err)
 	}
 
-	lines := []string{
+	dirs := []string{
+		parentDir(envdBinaryPath),
+		parentDir(envdServicePath),
+		parentDir(envdServiceWantsPath),
+		parentDir(sandboxMetadataPath),
+	}
+	for _, dir := range dirs {
+		if err := r.vmClient.MkdirAll(ctx, machineName, dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if err := r.vmClient.WriteFile(ctx, machineName, envdBinaryPath, envdBinary, 0o755); err != nil {
+		return err
+	}
+	if err := r.vmClient.WriteFile(ctx, machineName, envdServicePath, []byte(service), 0o644); err != nil {
+		return err
+	}
+	if err := r.vmClient.WriteFile(ctx, machineName, sandboxMetadataPath, metadataJSON, 0o644); err != nil {
+		return err
+	}
+	if err := r.configureVolumeMountFiles(ctx, machineName, spec); err != nil {
+		return err
+	}
+	if err := r.vmClient.Symlink(ctx, machineName, "../envd.service", envdServiceWantsPath); err != nil {
+		return err
+	}
+	_, err = r.vmClient.RunShell(ctx, machineName, strings.Join([]string{
 		"set -eu",
-		"ENVD_SOURCE=" + envdSourceExpr,
-		"sudo mkdir -p /usr/local/bin /etc/systemd/system /var/lib/e2b-local",
-		`sudo install -m 0755 "$ENVD_SOURCE" /usr/local/bin/envd`,
-		"cat <<'__E2B_ENVD_SERVICE__' | sudo tee " + shQuote(envdServicePath) + " >/dev/null",
-		service,
-		"__E2B_ENVD_SERVICE__",
-		"cat <<'__E2B_SANDBOX_METADATA__' | sudo tee " + shQuote(sandboxMetadataPath) + " >/dev/null",
-		string(metadataJSON),
-		"__E2B_SANDBOX_METADATA__",
-	}
-	for _, cmd := range renderVolumeMountCommands(r.cfg, spec.VolumeMounts, spec.VolumeHostDirs) {
-		lines = append(lines, "sudo "+cmd)
-	}
-	lines = append(lines, cleanupCommands...)
-	lines = append(lines,
 		"sudo systemctl daemon-reload",
 		"sudo systemctl enable envd",
 		"sudo systemctl restart envd",
-	)
-
-	script := strings.Join(lines, "\n")
-	_, err = r.vmClient.RunCommand(ctx, machineName, []string{"/bin/sh", "-lc", script})
+	}, "\n"))
 	return err
 }
 
-func (r *OrbstackRuntime) prepareEnvdBinary(ctx context.Context, machineName string) (string, []string, error) {
-	if err := r.vmClient.PushFile(ctx, machineName, r.cfg.EnvdBinary, stagedEnvdBinaryPath); err != nil {
-		return "", nil, err
+func (r *OrbstackRuntime) configureVolumeMountFiles(ctx context.Context, machineName string, spec machineProvisionSpec) error {
+	for _, mount := range normalizeVolumeMounts(spec.VolumeMounts) {
+		target := strings.TrimSpace(mount.Path)
+		volumeID := strings.TrimSpace(mount.VolumeID)
+		if target == "" || volumeID == "" {
+			continue
+		}
+
+		if err := r.vmClient.MkdirAll(ctx, machineName, parentDir(target), 0o755); err != nil {
+			return err
+		}
+		source := sandboxVolumeSourcePath(r.cfg, volumeID, spec.VolumeHostDirs[volumeID])
+		if err := r.vmClient.Symlink(ctx, machineName, source, target); err != nil {
+			return err
+		}
 	}
-	return shQuote(stagedEnvdBinaryPath), []string{`rm -f "$ENVD_SOURCE"`}, nil
+	return nil
 }
 
 func (r *OrbstackRuntime) waitForMachineState(ctx context.Context, machine string, state string) (VMInfo, error) {
@@ -683,9 +704,9 @@ func (r *OrbstackRuntime) runtimeInfo(sandboxID string, info VMInfo, volumeMount
 }
 
 func (r *OrbstackRuntime) readSandboxMetadata(ctx context.Context, machineName string) (sandboxMetadata, error) {
-	output, err := r.vmClient.RunCommand(ctx, machineName, []string{"/bin/sh", "-lc", "sudo cat " + shQuote(sandboxMetadataPath)})
+	output, err := r.vmClient.ReadFile(ctx, machineName, sandboxMetadataPath)
 	if err != nil {
-		if isRemoteFileNotFound(err) {
+		if os.IsNotExist(err) || isRemoteFileNotFound(err) {
 			return sandboxMetadata{}, nil
 		}
 		return sandboxMetadata{}, err

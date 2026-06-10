@@ -139,7 +139,7 @@ func main() {
 - E2B sandbox 生命周期 API：create、list、get、kill、pause、resume、connect 和 logs。
 - Template、build、volume、snapshot 和 metrics resource endpoints。
 - Docker runtime：创建、暂停、恢复、删除、重启恢复、读取日志和采集容器 stats。
-- OrbStack runtime：clone/start/stop/delete VM，把 `envd` 安装为 systemd service，管理 volume mount，并用 `orb clone` 创建 snapshot。
+- OrbStack runtime：通过 OrbStack socket clone/start/stop/delete VM，把 `envd` 安装为 systemd service，管理 volume mount，并且无需 fork OrbStack CLI 创建 snapshot。
 
 ## 目录结构
 
@@ -235,7 +235,7 @@ Docker runtime 下：
 - `pause` 和 `connect` 对应 Docker pause/unpause。
 - envd 在容器内固定监听 `49983`；Docker 会自动为每个 sandbox 分配独立的 localhost host port。
 - Template 会从本机已有 tag 的 Docker images 解析，也可以在 `templateID` 中直接传完整 image reference；对应镜像必须已经存在本机。
-- gateway 会把非敏感 runtime metadata 写入 `e2b.gateway.*` container label，进程重启后可恢复 running/paused sandbox。
+- gateway 会把非敏感 runtime metadata 写入 `e2b.local.*` container label，进程重启后可恢复 running/paused sandbox。
 - 自动选择或显式配置的 envd binary 会挂载为容器内 `/usr/local/bin/envd`。
 - 请求里的 E2B volume 使用 Docker 原生 named volume。
 - Sandbox response 会返回 Docker runtime 分配的直连 `envdURL`。
@@ -263,7 +263,6 @@ runtime:
   type: "orbstack"
 
 orbstack:
-  orb_binary: "/usr/local/bin/orb"
   machine_name_prefix: "e2b-sandbox-"
   envd_binary: "envd-bin/envd-linux-arm64"
   envd_port: 49983
@@ -279,7 +278,7 @@ OrbStack runtime 下：
 - sandbox envd URL 优先使用 VM IP 和固定 `envd_port`。
 - `orbstack.isolated: true` 会阻止 sandbox VM 看到完整 macOS 文件系统。
 - Volume 会通过 OrbStack selective mount 暴露，并在 VM 内 symlink 到请求路径。
-- Snapshot 通过 `orb clone` 创建。
+- Snapshot 通过 OrbStack socket RPC clone VM 创建。
 
 ## 测试
 

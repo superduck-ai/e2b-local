@@ -9,4 +9,4 @@
 /envd-*
 !/envd-bin/
 !/envd-bin/**
-orbctl
+/orbctl

@@ -3,8 +3,8 @@ package orbstackbackend
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -21,15 +21,28 @@ type fakeCloneCall struct {
 	Dest   string
 }
 
-type fakeRunCall struct {
+type fakePathCall struct {
 	Machine string
-	Cmd     []string
+	Path    string
+	Mode    fs.FileMode
 }
 
-type fakePushCall struct {
+type fakeWriteFileCall struct {
 	Machine string
-	Source  string
-	Dest    string
+	Path    string
+	Data    []byte
+	Mode    fs.FileMode
+}
+
+type fakeSymlinkCall struct {
+	Machine string
+	Oldname string
+	Newname string
+}
+
+type fakeShellCall struct {
+	Machine string
+	Script  string
 }
 
 type fakeMountCall struct {
@@ -50,26 +63,34 @@ type fakeVMClient struct {
 	stopCalls             []string
 	cloneCalls            []fakeCloneCall
 	mountCalls            []fakeMountCall
-	pushCalls             []fakePushCall
 	setMachineOptionCalls []fakeSetMachineOptionCall
+	mkdirCalls            []fakePathCall
+	removeCalls           []fakePathCall
+	writeFileCalls        []fakeWriteFileCall
+	readFileCalls         []fakePathCall
+	symlinkCalls          []fakeSymlinkCall
+	shellCalls            []fakeShellCall
 	infos                 map[string]VMInfo
 	listVMs               []VMInfo
-	runCalls              []fakeRunCall
-	runFunc               func(machine string, cmd []string) ([]byte, error)
+	readFiles             map[string][]byte
+	events                []string
 }
 
 func (f *fakeVMClient) DeleteVM(ctx context.Context, name string) error {
 	f.deleteCalls = append(f.deleteCalls, name)
+	f.events = append(f.events, "delete:"+name)
 	return nil
 }
 
 func (f *fakeVMClient) StartVM(ctx context.Context, name string) error {
 	f.startCalls = append(f.startCalls, name)
+	f.events = append(f.events, "start:"+name)
 	return nil
 }
 
 func (f *fakeVMClient) StopVM(ctx context.Context, name string) error {
 	f.stopCalls = append(f.stopCalls, name)
+	f.events = append(f.events, "stop:"+name)
 	return nil
 }
 
@@ -91,6 +112,7 @@ func (f *fakeVMClient) ListVMs(ctx context.Context) ([]VMInfo, error) {
 
 func (f *fakeVMClient) CloneVM(ctx context.Context, source, dest string) error {
 	f.cloneCalls = append(f.cloneCalls, fakeCloneCall{Source: source, Dest: dest})
+	f.events = append(f.events, "clone:"+dest)
 	return nil
 }
 
@@ -100,15 +122,7 @@ func (f *fakeVMClient) AddMachineMount(ctx context.Context, machine string, sour
 		Source:  source,
 		Dest:    dest,
 	})
-	return nil
-}
-
-func (f *fakeVMClient) PushFile(ctx context.Context, machine string, source string, dest string) error {
-	f.pushCalls = append(f.pushCalls, fakePushCall{
-		Machine: machine,
-		Source:  source,
-		Dest:    dest,
-	})
+	f.events = append(f.events, "mount:"+machine+":"+dest)
 	return nil
 }
 
@@ -118,23 +132,66 @@ func (f *fakeVMClient) SetMachineOption(ctx context.Context, machine string, opt
 		Option:  option,
 		Value:   value,
 	})
+	f.events = append(f.events, "config:"+machine+":"+option)
 	return nil
 }
 
-func (f *fakeVMClient) RunCommand(ctx context.Context, machine string, cmd []string) ([]byte, error) {
-	copied := append([]string(nil), cmd...)
-	f.runCalls = append(f.runCalls, fakeRunCall{
-		Machine: machine,
-		Cmd:     copied,
-	})
-	if f.runFunc != nil {
-		return f.runFunc(machine, copied)
+func (f *fakeVMClient) MkdirAll(ctx context.Context, machine string, path string, mode fs.FileMode) error {
+	f.mkdirCalls = append(f.mkdirCalls, fakePathCall{Machine: machine, Path: path, Mode: mode})
+	f.events = append(f.events, "mkdir:"+machine+":"+path)
+	return nil
+}
+
+func (f *fakeVMClient) RemoveAll(ctx context.Context, machine string, path string) error {
+	f.removeCalls = append(f.removeCalls, fakePathCall{Machine: machine, Path: path})
+	f.events = append(f.events, "remove:"+machine+":"+path)
+	return nil
+}
+
+func (f *fakeVMClient) ReadFile(ctx context.Context, machine string, path string) ([]byte, error) {
+	f.readFileCalls = append(f.readFileCalls, fakePathCall{Machine: machine, Path: path})
+	f.events = append(f.events, "read:"+machine+":"+path)
+	if f.readFiles != nil {
+		if data, ok := f.readFiles[fakeFileKey(machine, path)]; ok {
+			return append([]byte(nil), data...), nil
+		}
 	}
+	return nil, os.ErrNotExist
+}
+
+func (f *fakeVMClient) WriteFile(ctx context.Context, machine string, path string, data []byte, mode fs.FileMode) error {
+	f.writeFileCalls = append(f.writeFileCalls, fakeWriteFileCall{
+		Machine: machine,
+		Path:    path,
+		Data:    append([]byte(nil), data...),
+		Mode:    mode,
+	})
+	f.events = append(f.events, "write:"+machine+":"+path)
+	return nil
+}
+
+func (f *fakeVMClient) Symlink(ctx context.Context, machine string, oldname string, newname string) error {
+	f.symlinkCalls = append(f.symlinkCalls, fakeSymlinkCall{
+		Machine: machine,
+		Oldname: oldname,
+		Newname: newname,
+	})
+	f.events = append(f.events, "symlink:"+machine+":"+newname)
+	return nil
+}
+
+func (f *fakeVMClient) RunShell(ctx context.Context, machine string, script string) ([]byte, error) {
+	f.shellCalls = append(f.shellCalls, fakeShellCall{
+		Machine: machine,
+		Script:  script,
+	})
+	f.events = append(f.events, "shell:"+machine)
 	return nil, nil
 }
 
 func TestOrbstackRuntimeCreateSandboxClonesAndConfiguresMachine(t *testing.T) {
 	now := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
+	envdPath := writeTestEnvdBinary(t)
 	client := &fakeVMClient{
 		infos: map[string]VMInfo{
 			"ubuntu-2404": {
@@ -154,7 +211,7 @@ func TestOrbstackRuntimeCreateSandboxClonesAndConfiguresMachine(t *testing.T) {
 	runtime := &OrbstackRuntime{
 		cfg: OrbstackRuntimeConfig{
 			MachineNamePrefix: "e2b-sandbox-",
-			EnvdBinary:        "/tmp/e2b-local-envd-arm64",
+			EnvdBinary:        envdPath,
 			EnvdPort:          49983,
 			Templates: map[string]OrbstackTemplateConfig{
 				"ubuntu-2404": {
@@ -192,25 +249,21 @@ func TestOrbstackRuntimeCreateSandboxClonesAndConfiguresMachine(t *testing.T) {
 	if len(client.startCalls) != 1 || client.startCalls[0] != "e2b-sandbox-sbx123" {
 		t.Fatalf("unexpected start calls: %#v", client.startCalls)
 	}
-	if len(client.pushCalls) != 1 || client.pushCalls[0] != (fakePushCall{
-		Machine: "e2b-sandbox-sbx123",
-		Source:  "/tmp/e2b-local-envd-arm64",
-		Dest:    stagedEnvdBinaryPath,
-	}) {
-		t.Fatalf("unexpected push calls: %#v", client.pushCalls)
+	envdWrite := assertWriteFile(t, client, "e2b-sandbox-sbx123", envdBinaryPath)
+	if string(envdWrite.Data) != "envd-binary" || envdWrite.Mode != 0o755 {
+		t.Fatalf("unexpected envd write: %#v", envdWrite)
 	}
-	if len(client.runCalls) != 1 {
-		t.Fatalf("expected one configure run call, got %#v", client.runCalls)
-	}
-
-	configureScript := strings.Join(client.runCalls[0].Cmd, "\n")
-	assertScriptContains(t, configureScript, `ENVD_SOURCE='`+stagedEnvdBinaryPath+`'`)
-	assertScriptContains(t, configureScript, `rm -f "$ENVD_SOURCE"`)
-	assertScriptContains(t, configureScript, sandboxMetadataPath)
-	assertScriptContains(t, configureScript, `Environment="FOO=bar"`)
-	assertScriptContains(t, configureScript, `"template_id":"ubuntu-2404"`)
-	if strings.Contains(configureScript, "/mnt/mac") {
-		t.Fatalf("expected configure script to avoid /mnt/mac for envd, got %q", configureScript)
+	serviceWrite := assertWriteFile(t, client, "e2b-sandbox-sbx123", envdServicePath)
+	service := string(serviceWrite.Data)
+	assertStringContains(t, service, `Environment="FOO=bar"`)
+	assertStringContains(t, service, "ExecStart=/usr/local/bin/envd")
+	metadataWrite := assertWriteFile(t, client, "e2b-sandbox-sbx123", sandboxMetadataPath)
+	assertStringContains(t, string(metadataWrite.Data), `"template_id":"ubuntu-2404"`)
+	assertSymlink(t, client, "e2b-sandbox-sbx123", "../envd.service", envdServiceWantsPath)
+	assertShellContains(t, client, "e2b-sandbox-sbx123", "sudo systemctl restart envd")
+	assertEventBefore(t, client.events, "start:e2b-sandbox-sbx123", "write:e2b-sandbox-sbx123:"+envdBinaryPath)
+	if strings.Contains(service, "/mnt/mac") {
+		t.Fatalf("expected service to avoid /mnt/mac for envd, got %q", service)
 	}
 
 	if info.ContainerID != "vm-123" || info.MachineID != "e2b-sandbox-sbx123" || info.ContainerIP != "192.168.139.10" {
@@ -224,6 +277,7 @@ func TestOrbstackRuntimeCreateSandboxClonesAndConfiguresMachine(t *testing.T) {
 func TestOrbstackRuntimeCreateSandboxVolumeMountsForceSelectiveIsolatedMounts(t *testing.T) {
 	now := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
 	hostPath := t.TempDir()
+	envdPath := writeTestEnvdBinary(t)
 	writeTestVolumeMetadata(t, OrbstackRuntimeConfig{VolumeHostPath: hostPath}, RuntimeVolume{
 		VolumeID: "vol-1",
 		Name:     "data",
@@ -252,7 +306,7 @@ func TestOrbstackRuntimeCreateSandboxVolumeMountsForceSelectiveIsolatedMounts(t 
 		cfg: OrbstackRuntimeConfig{
 			MachineNamePrefix: "e2b-sandbox-",
 			VolumeHostPath:    hostPath,
-			EnvdBinary:        "/tmp/e2b-local-envd-arm64",
+			EnvdBinary:        envdPath,
 			EnvdPort:          49983,
 		},
 		vmClient: client,
@@ -304,16 +358,13 @@ func TestOrbstackRuntimeCreateSandboxVolumeMountsForceSelectiveIsolatedMounts(t 
 	}) {
 		t.Fatalf("unexpected second mount call: %#v", client.mountCalls)
 	}
-	if len(client.runCalls) != 1 {
-		t.Fatalf("expected one configure run call, got %#v", client.runCalls)
-	}
-
-	configureScript := strings.Join(client.runCalls[0].Cmd, "\n")
-	assertScriptContains(t, configureScript, "ln -sfn '"+isolatedVolumeSourcePath("vol-1")+"' '/data'")
-	assertScriptContains(t, configureScript, "ln -sfn '"+isolatedVolumeSourcePath("vol-1")+"' '/data-again'")
-	assertScriptContains(t, configureScript, "ln -sfn '"+isolatedVolumeSourcePath("vol-2")+"' '/cache'")
-	if strings.Contains(configureScript, "/mnt/mac") {
-		t.Fatalf("expected configure script to avoid /mnt/mac, got %q", configureScript)
+	assertSymlink(t, client, "e2b-sandbox-sbx123", isolatedVolumeSourcePath("vol-1"), "/data")
+	assertSymlink(t, client, "e2b-sandbox-sbx123", isolatedVolumeSourcePath("vol-1"), "/data-again")
+	assertSymlink(t, client, "e2b-sandbox-sbx123", isolatedVolumeSourcePath("vol-2"), "/cache")
+	for _, call := range client.symlinkCalls {
+		if strings.Contains(call.Oldname, "/mnt/mac") || strings.Contains(call.Newname, "/mnt/mac") {
+			t.Fatalf("expected configure symlinks to avoid /mnt/mac, got %#v", client.symlinkCalls)
+		}
 	}
 }
 
@@ -355,6 +406,7 @@ func TestOrbstackRuntimeResolveVolumeMountsByVolumeName(t *testing.T) {
 func TestOrbstackRuntimeCreateSandboxIsolatedUsesOrbConfigAndDirectFileCopy(t *testing.T) {
 	now := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
 	hostPath := t.TempDir()
+	envdPath := writeTestEnvdBinary(t)
 	writeTestVolumeMetadata(t, OrbstackRuntimeConfig{VolumeHostPath: hostPath}, RuntimeVolume{
 		VolumeID: "vol-1",
 		Name:     "data",
@@ -384,7 +436,7 @@ func TestOrbstackRuntimeCreateSandboxIsolatedUsesOrbConfigAndDirectFileCopy(t *t
 			MachineNamePrefix: "e2b-sandbox-",
 			Isolated:          true,
 			VolumeHostPath:    hostPath,
-			EnvdBinary:        "/tmp/e2b-local-envd-arm64",
+			EnvdBinary:        envdPath,
 			EnvdPort:          49983,
 		},
 		vmClient: client,
@@ -436,25 +488,17 @@ func TestOrbstackRuntimeCreateSandboxIsolatedUsesOrbConfigAndDirectFileCopy(t *t
 	}) {
 		t.Fatalf("unexpected second mount call: %#v", client.mountCalls)
 	}
-	if len(client.pushCalls) != 1 || client.pushCalls[0] != (fakePushCall{
-		Machine: "e2b-sandbox-sbx123",
-		Source:  "/tmp/e2b-local-envd-arm64",
-		Dest:    stagedEnvdBinaryPath,
-	}) {
-		t.Fatalf("unexpected push calls: %#v", client.pushCalls)
+	envdWrite := assertWriteFile(t, client, "e2b-sandbox-sbx123", envdBinaryPath)
+	if string(envdWrite.Data) != "envd-binary" || envdWrite.Mode != 0o755 {
+		t.Fatalf("unexpected envd write: %#v", envdWrite)
 	}
-	if len(client.runCalls) != 1 {
-		t.Fatalf("expected one configure call, got %#v", client.runCalls)
-	}
-
-	configureScript := strings.Join(client.runCalls[0].Cmd, "\n")
-	assertScriptContains(t, configureScript, `ENVD_SOURCE='`+stagedEnvdBinaryPath+`'`)
-	assertScriptContains(t, configureScript, `rm -f "$ENVD_SOURCE"`)
-	assertScriptContains(t, configureScript, "ln -sfn '"+isolatedVolumeSourcePath("vol-1")+"' '/data'")
-	assertScriptContains(t, configureScript, "ln -sfn '"+isolatedVolumeSourcePath("vol-1")+"' '/data-again'")
-	assertScriptContains(t, configureScript, "ln -sfn '"+isolatedVolumeSourcePath("vol-2")+"' '/cache'")
-	if strings.Contains(configureScript, "/mnt/mac") {
-		t.Fatalf("expected isolated configure script to avoid /mnt/mac, got %q", configureScript)
+	assertSymlink(t, client, "e2b-sandbox-sbx123", isolatedVolumeSourcePath("vol-1"), "/data")
+	assertSymlink(t, client, "e2b-sandbox-sbx123", isolatedVolumeSourcePath("vol-1"), "/data-again")
+	assertSymlink(t, client, "e2b-sandbox-sbx123", isolatedVolumeSourcePath("vol-2"), "/cache")
+	for _, call := range client.symlinkCalls {
+		if strings.Contains(call.Oldname, "/mnt/mac") || strings.Contains(call.Newname, "/mnt/mac") {
+			t.Fatalf("expected isolated configure symlinks to avoid /mnt/mac, got %#v", client.symlinkCalls)
+		}
 	}
 }
 
@@ -519,11 +563,8 @@ func TestOrbstackRuntimeRestoreSandboxesReadsMetadata(t *testing.T) {
 				State: "stopped",
 			},
 		},
-		runFunc: func(machine string, cmd []string) ([]byte, error) {
-			if machine == "e2b-sandbox-sbx-restored" {
-				return metadataJSON, nil
-			}
-			return nil, errors.New("unexpected machine")
+		readFiles: map[string][]byte{
+			fakeFileKey("e2b-sandbox-sbx-restored", sandboxMetadataPath): metadataJSON,
 		},
 	}
 	runtime := &OrbstackRuntime{
@@ -864,11 +905,73 @@ func TestOrbstackRuntimeListSnapshotsFiltersAndPaginates(t *testing.T) {
 	}
 }
 
-func assertScriptContains(t *testing.T, script string, want string) {
+func assertStringContains(t *testing.T, value string, want string) {
 	t.Helper()
-	if !strings.Contains(script, want) {
-		t.Fatalf("expected script %q to contain %q", script, want)
+	if !strings.Contains(value, want) {
+		t.Fatalf("expected %q to contain %q", value, want)
 	}
+}
+
+func assertWriteFile(t *testing.T, client *fakeVMClient, machine string, path string) fakeWriteFileCall {
+	t.Helper()
+	for _, call := range client.writeFileCalls {
+		if call.Machine == machine && call.Path == path {
+			return call
+		}
+	}
+	t.Fatalf("expected write call machine=%s path=%s, got %#v", machine, path, client.writeFileCalls)
+	return fakeWriteFileCall{}
+}
+
+func assertSymlink(t *testing.T, client *fakeVMClient, machine string, oldname string, newname string) {
+	t.Helper()
+	for _, call := range client.symlinkCalls {
+		if call.Machine == machine && call.Oldname == oldname && call.Newname == newname {
+			return
+		}
+	}
+	t.Fatalf("expected symlink machine=%s %s -> %s, got %#v", machine, newname, oldname, client.symlinkCalls)
+}
+
+func assertShellContains(t *testing.T, client *fakeVMClient, machine string, want string) {
+	t.Helper()
+	for _, call := range client.shellCalls {
+		if call.Machine == machine && strings.Contains(call.Script, want) {
+			return
+		}
+	}
+	t.Fatalf("expected shell call machine=%s containing %q, got %#v", machine, want, client.shellCalls)
+}
+
+func assertEventBefore(t *testing.T, events []string, before string, after string) {
+	t.Helper()
+	beforeIndex := -1
+	afterIndex := -1
+	for i, event := range events {
+		if event == before && beforeIndex == -1 {
+			beforeIndex = i
+		}
+		if event == after && afterIndex == -1 {
+			afterIndex = i
+		}
+	}
+	if beforeIndex == -1 || afterIndex == -1 || beforeIndex >= afterIndex {
+		t.Fatalf("expected event %q before %q, got %#v", before, after, events)
+	}
+}
+
+func fakeFileKey(machine string, path string) string {
+	return machine + "\x00" + path
+}
+
+func writeTestEnvdBinary(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "envd")
+	if err := os.WriteFile(path, []byte("envd-binary"), 0o755); err != nil {
+		t.Fatalf("write test envd binary: %v", err)
+	}
+	return path
 }
 
 func assertVolumeMetadataStorage(t *testing.T, metadataFile string) {

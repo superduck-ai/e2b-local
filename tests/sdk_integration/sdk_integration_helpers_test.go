@@ -4,9 +4,7 @@ package sdk_integration_test
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -17,6 +15,7 @@ import (
 	_ "e2b-local/internal/backends/docker"
 	_ "e2b-local/internal/backends/orbstack"
 	gateway "e2b-local/internal/gateway"
+	"e2b-local/internal/orbctl"
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -83,9 +82,6 @@ func skipUnlessOrbstackRuntimeAvailable(t *testing.T, cfg gateway.Config) {
 	if runtime.GOOS != "darwin" {
 		t.Skipf("orbstack runtime is only available on darwin, got %s", runtime.GOOS)
 	}
-	if _, err := os.Stat(cfg.Orbstack.OrbBinary); err != nil {
-		t.Skipf("orb binary is unavailable: %v", err)
-	}
 	if _, err := os.Stat(cfg.Orbstack.EnvdBinary); err != nil {
 		t.Skipf("envd binary is unavailable: %v", err)
 	}
@@ -98,10 +94,8 @@ func skipUnlessOrbstackRuntimeAvailable(t *testing.T, cfg gateway.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, cfg.Orbstack.OrbBinary, "info", "--format", "json", baseMachine)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Skipf("orbstack base machine %q is unavailable: %v\n%s", baseMachine, err, output)
+	if _, err := orbctl.NewClient(orbctl.DefaultSconRPCSocketPath()).Info(ctx, baseMachine); err != nil {
+		t.Skipf("orbstack base machine %q is unavailable: %v", baseMachine, err)
 	}
 }
 
@@ -283,26 +277,14 @@ func cleanupOrbstackIntegrationMachines(t *testing.T, cfg gateway.Config) {
 	if strings.TrimSpace(cfg.Runtime.Type) != "orbstack" {
 		return
 	}
-	if _, err := os.Stat(cfg.Orbstack.OrbBinary); err != nil {
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	listCmd := exec.CommandContext(ctx, cfg.Orbstack.OrbBinary, "list", "--format", "json")
-	output, err := listCmd.CombinedOutput()
+	client := orbctl.NewClient(orbctl.DefaultSconRPCSocketPath())
+	machines, err := client.ListMachines(ctx)
 	if err != nil {
-		t.Logf("list orbstack machines for cleanup: %v\n%s", err, output)
-		return
-	}
-
-	type listedMachine struct {
-		Name string `json:"name"`
-	}
-	var machines []listedMachine
-	if err := json.Unmarshal(output, &machines); err != nil {
-		t.Logf("decode orbstack machine list for cleanup: %v", err)
+		t.Logf("list orbstack machines for cleanup: %v", err)
 		return
 	}
 
@@ -315,10 +297,8 @@ func cleanupOrbstackIntegrationMachines(t *testing.T, cfg gateway.Config) {
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
-		deleteCmd := exec.CommandContext(context.Background(), cfg.Orbstack.OrbBinary, "delete", "--force", name)
-		deleteOutput, err := deleteCmd.CombinedOutput()
-		if err != nil {
-			t.Logf("delete orbstack machine %q during cleanup: %v\n%s", name, err, deleteOutput)
+		if err := client.Delete(context.Background(), name); err != nil {
+			t.Logf("delete orbstack machine %q during cleanup: %v", name, err)
 		}
 	}
 }

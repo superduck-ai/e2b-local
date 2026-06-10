@@ -142,7 +142,6 @@ runtime:
   type: "orbstack"
 
 orbstack:
-  orb_binary: "/usr/local/bin/orb"
   machine_name_prefix: "e2b-sandbox-"
   default_memory: "2G"
   default_cpus: "2"
@@ -167,9 +166,6 @@ orbstack:
 
 	if cfg.Runtime.Type != "orbstack" {
 		t.Fatalf("expected orbstack runtime, got %q", cfg.Runtime.Type)
-	}
-	if cfg.Orbstack.OrbBinary != "/usr/local/bin/orb" {
-		t.Fatalf("expected orb binary, got %q", cfg.Orbstack.OrbBinary)
 	}
 	if cfg.Orbstack.MachineNamePrefix != "e2b-sandbox-" {
 		t.Fatalf("expected machine prefix, got %q", cfg.Orbstack.MachineNamePrefix)

@@ -247,19 +247,19 @@ func TestDockerSandboxLabelsRoundTripControlPlaneFields(t *testing.T) {
 		AllowInternetAccess: &allowInternet,
 	}, "base", "example/base:latest")
 
-	if labels[dockerGatewaySandboxIDLabel] != "sbx_restore" || labels[dockerGatewaySandboxTemplateIDLabel] != "base" {
+	if labels[dockerLocalSandboxIDLabel] != "sbx_restore" || labels[dockerLocalSandboxTemplateIDLabel] != "base" {
 		t.Fatalf("missing sandbox identity labels: %#v", labels)
 	}
-	if dockerTimeLabel(labels[dockerGatewaySandboxCreatedAtLabel], time.Time{}) != createdAt {
-		t.Fatalf("expected created_at to round trip, got %q", labels[dockerGatewaySandboxCreatedAtLabel])
+	if dockerTimeLabel(labels[dockerLocalSandboxCreatedAtLabel], time.Time{}) != createdAt {
+		t.Fatalf("expected created_at to round trip, got %q", labels[dockerLocalSandboxCreatedAtLabel])
 	}
-	if dockerTimeLabel(labels[dockerGatewaySandboxEndAtLabel], time.Time{}) != endAt {
-		t.Fatalf("expected end_at to round trip, got %q", labels[dockerGatewaySandboxEndAtLabel])
+	if dockerTimeLabel(labels[dockerLocalSandboxEndAtLabel], time.Time{}) != endAt {
+		t.Fatalf("expected end_at to round trip, got %q", labels[dockerLocalSandboxEndAtLabel])
 	}
-	if got := dockerStringMapLabel(labels[dockerGatewaySandboxMetadataLabel]); got["source"] != "restore-test" {
+	if got := dockerStringMapLabel(labels[dockerLocalSandboxMetadataLabel]); got["source"] != "restore-test" {
 		t.Fatalf("expected metadata to round trip, got %#v", got)
 	}
-	if got := dockerBoolPtrLabel(labels[dockerGatewaySandboxAllowInternetLabel]); got == nil || *got {
+	if got := dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel]); got == nil || *got {
 		t.Fatalf("expected allow internet false, got %#v", got)
 	}
 	if got := dockerVolumeMountsFromLabels(labels); len(got) != 1 || got[0].Name != "data" || got[0].Path != "/mnt/data" {
@@ -363,7 +363,7 @@ func TestSnapshotInfoFromDockerImagePrefersLabelReference(t *testing.T) {
 		ID:       "sha256:1234567890abcdef",
 		RepoTags: []string{"e2b-local/snapshots/savepoint:default"},
 		Labels: map[string]string{
-			dockerGatewaySnapshotRefLabel: "team/savepoint:default",
+			dockerLocalSnapshotRefLabel: "team/savepoint:default",
 		},
 	})
 
@@ -383,11 +383,11 @@ func TestTemplateFromDockerImageRestoresGatewayLabels(t *testing.T) {
 		Created:    1717200000,
 		Size:       3 * 1024 * 1024,
 		Labels: map[string]string{
-			dockerGatewayTemplateIDLabel:       "custom-template",
-			dockerGatewayTemplateNamesLabel:    "custom-template,custom-alias",
-			dockerGatewayTemplateBuildIDLabel:  "build-123",
-			dockerGatewayTemplateCPUCountLabel: "2",
-			dockerGatewayTemplateMemoryMBLabel: "1024",
+			dockerLocalTemplateIDLabel:       "custom-template",
+			dockerLocalTemplateNamesLabel:    "custom-template,custom-alias",
+			dockerLocalTemplateBuildIDLabel:  "build-123",
+			dockerLocalTemplateCPUCountLabel: "2",
+			dockerLocalTemplateMemoryMBLabel: "1024",
 		},
 	})
 

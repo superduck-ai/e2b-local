@@ -13,7 +13,8 @@ flowchart TB
     end
 
     subgraph orbstack [OrbStack]
-        CLI["orbctl CLI (os/exec)"]
+        RPC["sconrpc.sock JSON-RPC"]
+        SSH["sconssh.sock SSH"]
         subgraph vm1 [VM: sandbox-abc123]
             ENVD1[envd :49983]
             FS1[Filesystem]
@@ -25,23 +26,25 @@ flowchart TB
     end
 
     API --> RT
-    RT --> CLI
+    RT --> RPC
+    RT --> SSH
     RT --> Store
-    CLI -->|"create/delete/start/stop/info/list"| vm1
-    CLI -->|"create/delete/start/stop/info/list"| vm2
+    RPC -->|"clone/delete/start/stop/info/list/config"| vm1
+    RPC -->|"clone/delete/start/stop/info/list/config"| vm2
+    SSH -->|"write files + systemd"| vm1
+    SSH -->|"write files + systemd"| vm2
 ```
 
 ## Key Design Decisions
 
-### 1. VM 生命周期管理方式：纯 CLI
+### 1. VM 生命周期管理方式：OrbStack socket
 
-**选择：全部通过 `orbctl` CLI 命令管理（`os/exec` 调用）**
+**选择：通过 OrbStack 内部 socket 通信管理，不 fork OrbStack CLI**
 
 理由：
-- `orbctl` CLI 是 OrbStack 官方稳定接口，覆盖完整 VM 生命周期
-- CLI 输出支持 `-f json`，结构化解析可靠
-- sconrpc 是内部协议，API 不稳定且功能有限（仅 ListContainers），第一期不使用
-- 不引入额外通信协议依赖，降低维护复杂度
+- `sconrpc.sock` 覆盖当前 runtime 需要的 clone/start/stop/delete/info/list/config set/add
+- `sconssh.sock` 提供 VM 内 SSH 会话，用于写入 root filesystem 并执行 systemd reload/restart
+- 避免为每次 VM 操作 fork CLI 进程，降低开销并减少输出格式兼容风险
 
 ### 2. envd 部署方式
 
@@ -55,7 +58,7 @@ envd binary 路径：`envd-bin/envd-linux-arm64`（配置加载后会按配置�
 
 ### 3. 网络连接方式
 
-**选择：优先使用 `orb info -f json` 返回的 VM IP + 固定端口，`.orb.local` 仅做兜底**
+**选择：优先使用 socket RPC 返回的 VM IP + 固定端口，`.orb.local` 仅做兜底**
 
 - 每个 VM 的 envd 监听 `0.0.0.0:49983`
 - 从宿主机优先通过 `http://<vm-ip>:49983` 访问
@@ -66,8 +69,8 @@ envd binary 路径：`envd-bin/envd-linux-arm64`（配置加载后会按配置�
 | Docker 概念 | OrbStack 等价 |
 |---|---|
 | Docker Image | Distro + Version + Cloud-init Config |
-| `docker pull` | `orbctl create` (首次创建) |
-| `docker commit` (snapshot) | `orbctl clone` (克隆 VM) |
+| `docker pull` | 预先存在的 OrbStack template machine |
+| `docker commit` (snapshot) | `ContainerClone` RPC (克隆 VM) |
 | Image Labels | cloud-init metadata + 命名约定 |
 
 **Template 定义方式**：YAML 配置文件中定义 template -> (distro, version, cloud-init-path) 映射表。
@@ -76,39 +79,36 @@ envd binary 路径：`envd-bin/envd-linux-arm64`（配置加载后会按配置�
 
 ## Implementation Plan
 
-### Phase 1: OrbStack CLI Client
+### Phase 1: OrbStack Socket Client
 
-文件：`internal/backends/orbstack/vm_client.go`（直接放在 orbstack backend 包内，不修改现有 `internal/orbctl`）
+文件：`internal/backends/orbstack/vm_client.go` + `internal/orbctl`
 
-封装 `orbctl` CLI 的所有 VM 操作，纯 `os/exec` 实现：
+封装 OrbStack socket 的所有 VM 操作：
 
 ```go
 type VMClient struct {
-    orbBinary string     // path to orb/orbctl binary, default "/usr/local/bin/orb"
-    logger    *log.Logger
+    orb           orbControl
+    orbRoot       string
+    sshSocketPath string
+    sshKeyPath    string
+    logger        *log.Logger
 }
 
-// VM lifecycle via CLI execution (os/exec)
-func (c *VMClient) CreateVM(ctx context.Context, req CreateVMRequest) error
+// VM lifecycle via sconrpc.sock JSON-RPC
 func (c *VMClient) DeleteVM(ctx context.Context, name string) error
 func (c *VMClient) StartVM(ctx context.Context, name string) error
 func (c *VMClient) StopVM(ctx context.Context, name string) error
 func (c *VMClient) GetVMInfo(ctx context.Context, name string) (VMInfo, error)
 func (c *VMClient) ListVMs(ctx context.Context) ([]VMInfo, error)
 func (c *VMClient) CloneVM(ctx context.Context, source, dest string) error
-func (c *VMClient) RunCommand(ctx context.Context, machine string, cmd []string) ([]byte, error)
+func (c *VMClient) SetMachineOption(ctx context.Context, machine, option, value string) error
+func (c *VMClient) AddMachineMount(ctx context.Context, machine, source, dest string) error
 
-type CreateVMRequest struct {
-    Name       string
-    Distro     string   // e.g. "ubuntu"
-    Version    string   // e.g. "noble"
-    Arch       string   // e.g. "arm64"
-    Memory     string   // e.g. "4G"
-    CPUs       string   // e.g. "2"
-    Disk       string   // e.g. "64G"
-    UserData   string   // cloud-init file path (absolute)
-    Isolated   bool
-}
+// VM file/service operations via sconssh.sock
+func (c *VMClient) MkdirAll(ctx context.Context, machine, vmPath string, mode fs.FileMode) error
+func (c *VMClient) WriteFile(ctx context.Context, machine, vmPath string, data []byte, mode fs.FileMode) error
+func (c *VMClient) Symlink(ctx context.Context, machine, oldname, newname string) error
+func (c *VMClient) RunShell(ctx context.Context, machine, script string) ([]byte, error)
 
 type VMInfo struct {
     ID      string `json:"id"`
@@ -124,17 +124,17 @@ type VMImage struct {
 }
 ```
 
-CLI 命令映射：
-- `CreateVM` -> `orbctl create [--arch] [--memory] [--cpus] [--disk] [-c user-data] <distro>:<version> <name>`
-- `DeleteVM` -> `orbctl delete -f <name>`
-- `StartVM` -> `orbctl start <name>`
-- `StopVM` -> `orbctl stop <name>`
-- `GetVMInfo` -> `orbctl info -f json <name>` (解析 JSON)
-- `ListVMs` -> `orbctl list -f json` (解析 JSON array)
-- `CloneVM` -> `orbctl clone <source> <dest>`
-- `RunCommand` -> `orbctl run -m <machine> <cmd...>`
+Socket 方法映射：
+- `StartVM` -> `ContainerStart` RPC
+- `StopVM` -> `ContainerStop` RPC
+- `DeleteVM` -> `ContainerDelete` RPC
+- `GetVMInfo` -> `ListContainers` RPC 后按 name/id 过滤
+- `ListVMs` -> `ListContainers` RPC
+- `CloneVM` -> `ContainerClone` RPC
+- `SetMachineOption`/`AddMachineMount` -> `ContainerSetConfig` RPC
+- VM 内 root 文件和 systemd 操作 -> `sconssh.sock` 上的 SSH session
 
-所有方法统一通过 `exec.CommandContext` 实现，支持 context 超时/取消。
+所有方法接收 `context.Context`，socket dial、HTTP request 和 SSH session 都支持超时/取消。
 
 ### Phase 2: Cloud-init Template
 
@@ -181,7 +181,6 @@ runcmd:
 package orbstackbackend
 
 type OrbstackRuntimeConfig struct {
-    OrbBinary            string            `yaml:"orb_binary"`
     MachineNamePrefix    string            `yaml:"machine_name_prefix"`
     DefaultDistro        string            `yaml:"default_distro"`
     DefaultVersion       string            `yaml:"default_version"`
@@ -364,7 +363,6 @@ runtime:
   type: orbstack
 
 orbstack:
-  orb_binary: /usr/local/bin/orb
   machine_name_prefix: "e2b-sandbox-"
   default_distro: ubuntu
   default_version: "noble"
@@ -443,11 +441,11 @@ orbstack:
 ```
 internal/backends/orbstack/
   runtime.go              # OrbstackRuntime: SandboxRuntime + optional interfaces
-  runtime_test.go         # Unit tests with mock CLI
+  runtime_test.go         # Unit tests with mock socket client
   cloud_init.go           # Cloud-init YAML generation from template config
   cloud_init_test.go      # Template rendering tests
-  vm_client.go            # VMClient: pure os/exec wrapper for orbctl CLI
-  vm_client_test.go       # Tests with exec mock
+  vm_client.go            # VMClient: sconrpc/sconssh socket wrapper
+  vm_client_test.go       # Tests with socket/RPC mocks
   config.go               # OrbstackRuntimeConfig + OrbstackTemplateConfig + validation
 ```
 
