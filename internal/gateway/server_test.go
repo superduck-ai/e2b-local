@@ -2348,6 +2348,32 @@ func parseGoFile(t *testing.T, path string) *ast.File {
 	return file
 }
 
+func TestListedSandboxResponseUsesRecordEndAt(t *testing.T) {
+	app := &App{cfg: DefaultConfig()}
+
+	createdAt := time.Now().UTC().Add(-10 * time.Minute)
+	customEndAt := createdAt.Add(30 * time.Minute)
+
+	record := SandboxRecord{
+		ID:         "sbx_test_endat",
+		TemplateID: "base",
+		CreatedAt:  createdAt,
+		EndAt:      customEndAt,
+		State:      "running",
+	}
+
+	resp := app.listedSandboxResponse(record)
+
+	if !resp.EndAt.Equal(customEndAt) {
+		t.Fatalf("expected EndAt %s from record, got %s (hardcoded would be %s)", customEndAt, resp.EndAt, createdAt.Add(5*time.Minute))
+	}
+
+	hardcodedEndAt := createdAt.Add(5 * time.Minute)
+	if resp.EndAt.Equal(hardcodedEndAt) {
+		t.Fatal("EndAt must not be hardcoded to CreatedAt + 5 minutes")
+	}
+}
+
 func receiverTypeName(expr ast.Expr) string {
 	switch value := expr.(type) {
 	case *ast.Ident:

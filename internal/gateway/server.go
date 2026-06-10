@@ -568,7 +568,7 @@ func (a *App) listedSandboxResponse(record SandboxRecord) ListedSandboxResponse 
 		ClientID:     "e2b-local",
 		CPUCount:     1,
 		DiskSizeMB:   0,
-		EndAt:        record.CreatedAt.Add(5 * time.Minute),
+		EndAt:        record.EndAt,
 		EnvdVersion:  defaultEnvdVersion,
 		MemoryMB:     512,
 		Metadata:     record.Metadata,
