@@ -35,6 +35,100 @@ go run ./cmd/e2b-local volume create --config config.yaml test-volume
 {"volumeID":"test-volume","name":"test-volume","token":"compat-volume-token-test-volume"}
 ```
 
+## 从 E2B SDK 调用
+
+把 E2B SDK 指向本地 gateway，而不是托管版 E2B API：
+
+```bash
+export E2B_API_URL="http://127.0.0.1:3000"
+export E2B_API_KEY="local"
+unset E2B_SANDBOX_URL
+```
+
+`E2B_API_KEY` 只是为了兼容 SDK。local gateway 不需要真实的托管版 E2B key。
+
+Template ID 来自本地 runtime：
+
+- Docker runtime 会把本机已有 tag 的 Docker images 暴露为 template。例如 `e2b-local/code-interpreter:latest` 会暴露为 `code-interpreter`。
+- OrbStack runtime 会把已有 OrbStack machine，或者配置里的 template ID，暴露为 template。
+- 可以通过 SDK 的 `ListTemplates`，或者 `GET /templates`，查看当前机器上可用的准确 ID。
+
+JavaScript / TypeScript 调用方：
+
+```ts
+import { Sandbox, Volume } from 'e2b'
+
+const template = 'code-interpreter'
+const sandbox = await Sandbox.create(template)
+
+try {
+  const result = await sandbox.commands.run('echo "hello from e2b-local"')
+  console.log(result.stdout)
+} finally {
+  await sandbox.kill()
+}
+
+const volume = await Volume.create('my-data')
+const withVolume = await Sandbox.create(template, {
+  volumeMounts: {
+    '/mnt/data': volume,
+  },
+})
+await withVolume.kill()
+```
+
+Go 调用方可以使用 [superduck-ai/e2b-go-sdk](https://github.com/superduck-ai/e2b-go-sdk)：
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	e2b "github.com/superduck-ai/e2b-go-sdk"
+)
+
+func main() {
+	ctx := context.Background()
+	template := "code-interpreter"
+
+	sandbox, err := e2b.Create(ctx, template, nil)
+	if err != nil {
+		panic(err)
+	}
+	defer sandbox.Kill(ctx, nil)
+
+	result, err := sandbox.Commands.Run(ctx, `echo "hello from e2b-local"`, nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result.(*e2b.CommandResult).Stdout)
+
+	volume, err := e2b.CreateVolume(ctx, "my-data", nil)
+	if err != nil {
+		panic(err)
+	}
+	defer e2b.DestroyVolume(ctx, volume.VolumeID, nil)
+
+	withVolume, err := e2b.Create(ctx, template, &e2b.SandboxOpts{
+		VolumeMounts: map[string]any{
+			"/mnt/data": volume,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer withVolume.Kill(ctx, nil)
+}
+```
+
+调用方需要知道的 runtime 差异：
+
+- Docker volume 使用 Docker 原生 named volume，返回的 `volumeID` 就是 Docker volume name。
+- OrbStack volume 是 `orbstack.volume_host_path` 下的本地目录，会按需 mount 到 sandbox VM。
+- SDK 在创建 sandbox 后会收到该 sandbox 的直连 `envdURL`，所以 commands、filesystem、PTY 和 streaming 调用会直接访问 sandbox runtime。
+
 ## 当前状态
 
 已经实现的能力包括：
@@ -187,47 +281,6 @@ OrbStack runtime 下：
 - Volume 会通过 OrbStack selective mount 暴露，并在 VM 内 symlink 到请求路径。
 - Snapshot 通过 `orb clone` 创建。
 
-## SDK 使用
-
-JS SDK smoke test：
-
-```bash
-export E2B_API_URL="http://127.0.0.1:3000"
-export E2B_API_KEY="local"
-node scripts/js-sdk-smoke.mjs
-```
-
-如果使用本地 JS SDK build：
-
-```bash
-E2B_API_URL="http://127.0.0.1:3000" \
-E2B_API_KEY="local" \
-E2B_JS_SDK_IMPORT="/absolute/path/to/js-sdk/dist/index.mjs" \
-node scripts/js-sdk-smoke.mjs
-```
-
-最小 SDK 验收场景：
-
-```ts
-import { Sandbox } from 'e2b'
-
-const sandbox = await Sandbox.create()
-
-const result = await sandbox.commands.run('echo "hello"')
-console.log(result.stdout)
-
-await sandbox.kill()
-```
-
-期望行为：
-
-- `Sandbox.create()` 返回 sandbox。
-- `sandbox.sandboxId` 由 gateway 生成。
-- `sandbox.commands.run(...)` 成功。
-- `result.exitCode === 0`。
-- `result.stdout` 包含 `hello`。
-- `sandbox.kill()` 成功。
-
 ## 测试
 
 运行常规测试：
@@ -249,25 +302,3 @@ go test -tags=go_sdk_integration -run 'TestGoSDKGatewayMVP|TestGoSDKGatewayFiles
 ```
 
 SDK 集成测试会通过 `LoadConfig("config.yaml")` 读取配置；当 Docker、envd、Node 或 SDK 依赖不可用时会自动跳过。
-
-## OpenAPI 重新生成
-
-生成代码位于 `internal/e2bapi/api.gen.go`，仓库内 schema 位于 `internal/e2bapi/openapi.json`。
-
-重新生成：
-
-```bash
-go generate ./internal/e2bapi
-```
-
-schema 变更后，需要同步更新 `internal/gateway/gateway_api.go` 或对应的 `GatewayCallbacks`。
-
-## 当前限制
-
-以下方向仍需要更多实现或验证：
-
-- 多租户隔离
-- 数据库持久化和高可用
-- 文件同步
-- 更多 Docker 和 OrbStack 生命周期边界测试
-- 更多 WebSocket、SSE 和 envd streaming 端到端兼容测试

@@ -35,6 +35,139 @@ The command reuses the configured runtime and returns the same JSON shape as `PO
 {"volumeID":"test-volume","name":"test-volume","token":"compat-volume-token-test-volume"}
 ```
 
+## Architecture
+
+```mermaid
+flowchart LR
+  SDK["E2B SDK callers"] -->|"E2B API requests<br/>E2B_API_URL"| Gateway["e2b-local gateway<br/>cmd/e2b-local"]
+
+  subgraph ControlPlane["Control plane"]
+    Gateway --> HTTP["Gin HTTP server<br/>internal/gateway"]
+    HTTP --> OpenAPI["Generated OpenAPI handlers<br/>internal/e2bapi"]
+    OpenAPI --> Callbacks["Gateway callbacks<br/>sandbox, template, volume, metrics"]
+    Callbacks --> Store["In-memory stores<br/>sandbox + management state"]
+    Callbacks --> Registry["Runtime registry<br/>RegisterSandboxRuntimeFactory"]
+  end
+
+  subgraph RuntimeBackends["Runtime backends"]
+    Registry --> Docker["Docker runtime<br/>internal/backends/docker"]
+    Registry --> OrbStack["OrbStack runtime<br/>internal/backends/orbstack"]
+  end
+
+  subgraph DockerRuntime["Docker"]
+    Docker --> Containers["Sandbox containers<br/>from local images"]
+    Docker --> DockerVolumes["Docker named volumes"]
+  end
+
+  subgraph OrbRuntime["OrbStack"]
+    OrbStack --> VMs["Cloned sandbox VMs"]
+    OrbStack --> HostVolumes["Host volume directories<br/>orbstack.volume_host_path"]
+  end
+
+  EnvdBin["envd-bin<br/>linux amd64 / arm64"] --> Docker
+  EnvdBin --> OrbStack
+  Containers --> ContainerEnvd["envd inside container"]
+  VMs --> VMEnvd["envd systemd service"]
+  ContainerEnvd -. "direct envdURL" .-> SDK
+  VMEnvd -. "direct envdURL" .-> SDK
+```
+
+The gateway handles E2B-compatible control-plane APIs such as sandbox lifecycle, templates, volumes, snapshots, metrics, and logs. After a sandbox is created, SDK calls for commands, filesystem, PTY, and streaming use the sandbox-specific `envdURL` returned by the runtime.
+
+## Use From E2B SDKs
+
+Point the E2B SDK at the local gateway instead of the hosted E2B API:
+
+```bash
+export E2B_API_URL="http://127.0.0.1:3000"
+export E2B_API_KEY="local"
+unset E2B_SANDBOX_URL
+```
+
+`E2B_API_KEY` is kept for SDK compatibility. The local gateway does not require a real hosted E2B key.
+
+Template IDs are local runtime IDs:
+
+- Docker runtime exposes tagged local Docker images as templates. For example, `e2b-local/code-interpreter:latest` is available as `code-interpreter`.
+- OrbStack runtime exposes existing OrbStack machines, or configured template IDs, as templates.
+- Call `ListTemplates` from the SDK, or `GET /templates`, to see the exact IDs available on the current machine.
+
+JavaScript or TypeScript callers:
+
+```ts
+import { Sandbox, Volume } from 'e2b'
+
+const template = 'code-interpreter'
+const sandbox = await Sandbox.create(template)
+
+try {
+  const result = await sandbox.commands.run('echo "hello from e2b-local"')
+  console.log(result.stdout)
+} finally {
+  await sandbox.kill()
+}
+
+const volume = await Volume.create('my-data')
+const withVolume = await Sandbox.create(template, {
+  volumeMounts: {
+    '/mnt/data': volume,
+  },
+})
+await withVolume.kill()
+```
+
+Go callers can use [superduck-ai/e2b-go-sdk](https://github.com/superduck-ai/e2b-go-sdk):
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	e2b "github.com/superduck-ai/e2b-go-sdk"
+)
+
+func main() {
+	ctx := context.Background()
+	template := "code-interpreter"
+
+	sandbox, err := e2b.Create(ctx, template, nil)
+	if err != nil {
+		panic(err)
+	}
+	defer sandbox.Kill(ctx, nil)
+
+	result, err := sandbox.Commands.Run(ctx, `echo "hello from e2b-local"`, nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result.(*e2b.CommandResult).Stdout)
+
+	volume, err := e2b.CreateVolume(ctx, "my-data", nil)
+	if err != nil {
+		panic(err)
+	}
+	defer e2b.DestroyVolume(ctx, volume.VolumeID, nil)
+
+	withVolume, err := e2b.Create(ctx, template, &e2b.SandboxOpts{
+		VolumeMounts: map[string]any{
+			"/mnt/data": volume,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer withVolume.Kill(ctx, nil)
+}
+```
+
+Runtime notes for callers:
+
+- Docker volumes are Docker native named volumes. The returned `volumeID` is the Docker volume name.
+- OrbStack volumes are directories under `orbstack.volume_host_path` and are mounted into sandbox VMs on demand.
+- The SDK receives a direct `envdURL` for each sandbox, so commands, filesystem, PTY, and streaming calls talk directly to the sandbox runtime after creation.
+
 ## Status
 
 Implemented capabilities include:
@@ -187,47 +320,6 @@ In OrbStack runtime:
 - Volumes are exposed through OrbStack selective mounts and symlinked to the requested paths inside the VM.
 - Snapshots are created with `orb clone`.
 
-## SDK Usage
-
-For JS SDK smoke tests:
-
-```bash
-export E2B_API_URL="http://127.0.0.1:3000"
-export E2B_API_KEY="local"
-node scripts/js-sdk-smoke.mjs
-```
-
-If you want to use a local JS SDK build:
-
-```bash
-E2B_API_URL="http://127.0.0.1:3000" \
-E2B_API_KEY="local" \
-E2B_JS_SDK_IMPORT="/absolute/path/to/js-sdk/dist/index.mjs" \
-node scripts/js-sdk-smoke.mjs
-```
-
-Minimal SDK acceptance scenario:
-
-```ts
-import { Sandbox } from 'e2b'
-
-const sandbox = await Sandbox.create()
-
-const result = await sandbox.commands.run('echo "hello"')
-console.log(result.stdout)
-
-await sandbox.kill()
-```
-
-Expected behavior:
-
-- `Sandbox.create()` returns a sandbox.
-- `sandbox.sandboxId` is generated by the gateway.
-- `sandbox.commands.run(...)` succeeds.
-- `result.exitCode === 0`.
-- `result.stdout` contains `hello`.
-- `sandbox.kill()` succeeds.
-
 ## Tests
 
 Run regular tests:
@@ -249,25 +341,3 @@ go test -tags=go_sdk_integration -run 'TestGoSDKGatewayMVP|TestGoSDKGatewayFiles
 ```
 
 The SDK integration tests read `config.yaml` through `LoadConfig("config.yaml")` and skip when Docker, envd, Node, or SDK dependencies are unavailable.
-
-## OpenAPI Regeneration
-
-Generated code lives in `internal/e2bapi/api.gen.go`, and the checked-in schema lives in `internal/e2bapi/openapi.json`.
-
-Regenerate it with:
-
-```bash
-go generate ./internal/e2bapi
-```
-
-After schema changes, update explicit handlers in `internal/gateway/gateway_api.go` or the corresponding `GatewayCallbacks`.
-
-## Current Limitations
-
-The following areas still need more work or validation:
-
-- multi-tenant isolation
-- database-backed persistence and HA
-- file synchronization
-- more Docker and OrbStack lifecycle edge-case coverage
-- more end-to-end WebSocket and SSE envd compatibility coverage
