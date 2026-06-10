@@ -603,6 +603,11 @@ func (a *App) reconcileSandboxRecordWithInspector(ctx context.Context, inspector
 		return SandboxRecord{}, false, err
 	}
 	if !inspection.Exists {
+		if a.runtime != nil {
+			if err := a.runtime.DeleteSandbox(ctx, record.RuntimeInfo); err != nil {
+				a.logger.Printf("sandbox reconcile cleanup failed sandbox_id=%s container_id=%s error=%v", record.ID, record.RuntimeInfo.ContainerID, err)
+			}
+		}
 		deleted, err := a.store.Delete(record.ID)
 		if err != nil {
 			return SandboxRecord{}, false, err
