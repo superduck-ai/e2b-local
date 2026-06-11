@@ -1145,11 +1145,16 @@ func (a *App) defaultStartTemplateBuildV2(ctx context.Context, templateID string
 		if err != nil {
 			return err
 		}
+		task, err := a.builds.reserve(template.TemplateID, buildID)
+		if err != nil {
+			return templateBuildStartError(err)
+		}
 		template.BuildStatus = e2bapi.TemplateBuildStatusBuilding
 		if _, err := a.management.UpsertTemplate(template, nil, startLogs); err != nil {
+			a.builds.release(task)
 			return err
 		}
-		a.startTemplateBuildV2(starter, template, buildID, req, files, startLogs)
+		a.startTemplateBuildV2(task, starter, template, buildID, req, files, startLogs)
 		return nil
 	}
 
@@ -1157,21 +1162,34 @@ func (a *App) defaultStartTemplateBuildV2(ctx context.Context, templateID string
 	return err
 }
 
-func (a *App) startTemplateBuildV2(starter SandboxRuntimeTemplateBuildStarter, template GatewayTemplate, buildID string, req e2bapi.TemplateBuildStartV2, files []TemplateBuildFile, startLogs []e2bapi.BuildLogEntry) {
-	go func() {
-		builtTemplate, logs, err := starter.StartTemplateBuildV2(context.Background(), template, buildID, req, files)
+func (a *App) startTemplateBuildV2(task *templateBuildTask, starter SandboxRuntimeTemplateBuildStarter, template GatewayTemplate, buildID string, req e2bapi.TemplateBuildStartV2, files []TemplateBuildFile, startLogs []e2bapi.BuildLogEntry) {
+	task.goRun(func(ctx context.Context) {
+		builtTemplate, logs, err := starter.StartTemplateBuildV2(ctx, template, buildID, req, files)
+		if err == nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		if err != nil {
 			failed := template
 			failed.BuildID = buildID
 			failed.BuildStatus = e2bapi.TemplateBuildStatusError
 			failed.UpdatedAt = time.Now().UTC()
+			message := err.Error()
+			if errors.Is(err, context.Canceled) {
+				message = "v2 template build cancelled by e2b-local"
+			}
 			if len(logs) == 0 {
-				logs = localBuildErrorLogs(err.Error())
+				logs = localBuildErrorLogs(message)
+			}
+			if !a.builds.isCurrent(task) {
+				return
 			}
 			if _, saveErr := a.management.UpsertTemplate(failed, nil, appendBuildLogs(startLogs, logs)); saveErr != nil {
 				a.logger.Printf("v2 template build failure state save failed template_id=%s build_id=%s: %v", template.TemplateID, buildID, saveErr)
 			}
 			a.logger.Printf("v2 template build failed template_id=%s build_id=%s: %v", template.TemplateID, buildID, err)
+			return
+		}
+		if !a.builds.isCurrent(task) {
 			return
 		}
 
@@ -1188,7 +1206,20 @@ func (a *App) startTemplateBuildV2(starter SandboxRuntimeTemplateBuildStarter, t
 		if _, saveErr := a.management.UpsertTemplate(builtTemplate, nil, appendBuildLogs(startLogs, logs)); saveErr != nil {
 			a.logger.Printf("v2 template build state save failed template_id=%s build_id=%s: %v", template.TemplateID, buildID, saveErr)
 		}
-	}()
+	})
+}
+
+func templateBuildStartError(err error) error {
+	switch {
+	case errors.Is(err, errTemplateBuildCapacityExhausted):
+		return gatewayError(http.StatusTooManyRequests, "template build capacity exhausted")
+	case errors.Is(err, errTemplateBuildAlreadyRunning):
+		return gatewayError(http.StatusConflict, "template build is already running")
+	case errors.Is(err, errTemplateBuildManagerStopped):
+		return gatewayError(http.StatusServiceUnavailable, "template build manager is stopped")
+	default:
+		return err
+	}
 }
 
 func (a *App) templateBuildFiles(req e2bapi.TemplateBuildStartV2, templateID string) ([]TemplateBuildFile, error) {
@@ -1504,7 +1535,10 @@ func (a *App) defaultKillTeamSandboxes(ctx context.Context, teamID string) (e2ba
 }
 
 func (a *App) defaultCancelTeamBuilds(ctx context.Context, teamID string) (e2bapi.AdminBuildCancelResult, error) {
-	return e2bapi.AdminBuildCancelResult{}, nil
+	if a.builds == nil {
+		return e2bapi.AdminBuildCancelResult{}, nil
+	}
+	return a.builds.cancelTeamBuilds(teamID), nil
 }
 
 func (a *App) findTemplateByTaggedName(ctx context.Context, value string) (GatewayTemplate, error) {

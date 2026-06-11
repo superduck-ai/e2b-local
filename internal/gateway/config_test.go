@@ -30,6 +30,9 @@ func TestLoadConfigEmptyPathUsesDefaults(t *testing.T) {
 	if cfg.Docker.EnvdBinary != "" {
 		t.Fatalf("expected docker envd binary default to be empty, got %q", cfg.Docker.EnvdBinary)
 	}
+	if cfg.TemplateBuilds.MaxConcurrent != defaultTemplateBuildMaxConcurrent {
+		t.Fatalf("expected template build concurrency default %d, got %d", defaultTemplateBuildMaxConcurrent, cfg.TemplateBuilds.MaxConcurrent)
+	}
 }
 
 func TestDefaultConfigUsesDockerHostEnvironment(t *testing.T) {
@@ -97,6 +100,26 @@ docker:
 
 	if cfg.Docker.Platform != "linux/amd64" {
 		t.Fatalf("expected docker platform override, got %q", cfg.Docker.Platform)
+	}
+}
+
+func TestLoadConfigReadsTemplateBuildLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+template_builds:
+  max_concurrent: 4
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.TemplateBuilds.MaxConcurrent != 4 {
+		t.Fatalf("expected template build concurrency override, got %d", cfg.TemplateBuilds.MaxConcurrent)
 	}
 }
 

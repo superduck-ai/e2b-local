@@ -24,13 +24,15 @@ const (
 	defaultOrbstackEnvdBinary         = "envd-bin/envd-linux-arm64"
 	defaultOrbstackEnvdPort           = 49983
 	defaultOrbstackHealthTimeout      = 60
+	defaultTemplateBuildMaxConcurrent = 2
 )
 
 type Config struct {
-	Server   ServerConfig          `yaml:"server"`
-	Runtime  RuntimeConfig         `yaml:"runtime"`
-	Docker   DockerRuntimeConfig   `yaml:"docker"`
-	Orbstack OrbstackRuntimeConfig `yaml:"orbstack"`
+	Server         ServerConfig          `yaml:"server"`
+	Runtime        RuntimeConfig         `yaml:"runtime"`
+	Docker         DockerRuntimeConfig   `yaml:"docker"`
+	Orbstack       OrbstackRuntimeConfig `yaml:"orbstack"`
+	TemplateBuilds TemplateBuildConfig   `yaml:"template_builds"`
 }
 
 type ServerConfig struct {
@@ -39,6 +41,10 @@ type ServerConfig struct {
 
 type RuntimeConfig struct {
 	Type string `yaml:"type"`
+}
+
+type TemplateBuildConfig struct {
+	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
 type DockerRuntimeConfig struct {
@@ -92,6 +98,9 @@ func DefaultConfig() Config {
 			EnvdPort:             defaultOrbstackEnvdPort,
 			HealthTimeoutSeconds: defaultOrbstackHealthTimeout,
 			VolumeHostPath:       defaultVolumeHostPath(),
+		},
+		TemplateBuilds: TemplateBuildConfig{
+			MaxConcurrent: defaultTemplateBuildMaxConcurrent,
 		},
 	}
 }
@@ -231,6 +240,9 @@ func (c Config) Validate() error {
 
 	if c.Runtime.Type == "" {
 		return fmt.Errorf("runtime.type is required")
+	}
+	if c.TemplateBuilds.MaxConcurrent <= 0 {
+		return fmt.Errorf("template_builds.max_concurrent must be greater than 0")
 	}
 
 	switch c.Runtime.Type {

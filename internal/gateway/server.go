@@ -23,8 +23,10 @@ type App struct {
 
 	cfg        Config
 	logger     *log.Logger
+	router     http.Handler
 	store      *SandboxStore
 	management *GatewayManagementStore
+	builds     *templateBuildManager
 	runtime    SandboxRuntime
 	callbacks  GatewayCallbacks
 }
@@ -56,12 +58,14 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 
 	management := NewGatewayManagementStore()
 	store := NewSandboxStore()
+	builds := newTemplateBuildManager(cfg.TemplateBuilds.MaxConcurrent)
 
 	app := &App{
 		cfg:        cfg,
 		logger:     logger,
 		store:      store,
 		management: management,
+		builds:     builds,
 		runtime:    runtime,
 	}
 	app.callbacks = callbacks.WithDefaults(DefaultGatewayCallbacks(app))
@@ -97,7 +101,19 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 	router.PUT("/_e2b/template-files/:templateID/:hash", app.handleTemplateFileUpload)
 	router.NoRoute(app.handleNoRoute)
 
-	return router, nil
+	app.router = router
+	return app, nil
+}
+
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.router.ServeHTTP(w, r)
+}
+
+func (a *App) Shutdown(ctx context.Context) error {
+	if a.builds == nil {
+		return nil
+	}
+	return a.builds.shutdown(ctx)
 }
 
 func (a *App) restoreRuntimeSandboxes(ctx context.Context) error {

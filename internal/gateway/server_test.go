@@ -1621,6 +1621,202 @@ func TestTemplateBuildStartV2RunsAsynchronously(t *testing.T) {
 	}
 }
 
+func TestCancelTeamBuildsCancelsRunningTemplateBuild(t *testing.T) {
+	runtime := &recordingTemplateBuilderRuntime{
+		startBuildEntered:  make(chan struct{}),
+		releaseStartBuild:  make(chan struct{}),
+		startBuildReturned: make(chan struct{}),
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/templates", bytes.NewBufferString(`{"name":"cancel-template"}`))
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusAccepted, createRec.Code, createRec.Body.String())
+	}
+
+	var created e2bapi.TemplateRequestResponseV3
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created template: %v", err)
+	}
+
+	startReq := httptest.NewRequest(
+		http.MethodPost,
+		"/v2/templates/cancel-template/builds/"+created.BuildID,
+		bytes.NewBufferString(`{"fromImage":"ubuntu:22.04","steps":[{"type":"RUN","args":["sleep 30"]}]}`),
+	)
+	startRec := httptest.NewRecorder()
+	app.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("expected start status %d, got %d: %s", http.StatusAccepted, startRec.Code, startRec.Body.String())
+	}
+	waitForSignal(t, runtime.startBuildEntered, "runtime start build entered")
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/admin/teams/"+localTeamID+"/builds/cancel", nil)
+	cancelRec := httptest.NewRecorder()
+	app.ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("expected cancel builds status %d, got %d: %s", http.StatusOK, cancelRec.Code, cancelRec.Body.String())
+	}
+	var cancelResult e2bapi.AdminBuildCancelResult
+	if err := json.Unmarshal(cancelRec.Body.Bytes(), &cancelResult); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if cancelResult.CancelledCount != 1 || cancelResult.FailedCount != 0 {
+		t.Fatalf("unexpected cancel result: %#v", cancelResult)
+	}
+	waitForSignal(t, runtime.startBuildReturned, "runtime start build returned")
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/templates/cancel-template/builds/"+created.BuildID+"/status", nil)
+	statusRec := httptest.NewRecorder()
+	app.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status response %d, got %d: %s", http.StatusOK, statusRec.Code, statusRec.Body.String())
+	}
+
+	var buildInfo e2bapi.TemplateBuildInfo
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &buildInfo); err != nil {
+		t.Fatalf("decode build info: %v", err)
+	}
+	if buildInfo.Status != e2bapi.TemplateBuildStatusError {
+		t.Fatalf("expected cancelled build to be marked error, got %#v", buildInfo)
+	}
+	if !buildLogMessagesContain(buildInfo.LogEntries, "v2 template build cancelled by e2b-local") {
+		t.Fatalf("expected cancellation log entry, got %#v", buildInfo.LogEntries)
+	}
+}
+
+func TestTemplateBuildStartV2EnforcesConcurrencyLimit(t *testing.T) {
+	runtime := &recordingTemplateBuilderRuntime{
+		startBuildEntered:  make(chan struct{}),
+		releaseStartBuild:  make(chan struct{}),
+		startBuildReturned: make(chan struct{}),
+	}
+	cfg := DefaultConfig()
+	cfg.TemplateBuilds.MaxConcurrent = 1
+	app, err := NewAppWithRuntime(cfg, log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	createBusyReq := httptest.NewRequest(http.MethodPost, "/v3/templates", bytes.NewBufferString(`{"name":"busy-template"}`))
+	createBusyRec := httptest.NewRecorder()
+	app.ServeHTTP(createBusyRec, createBusyReq)
+	if createBusyRec.Code != http.StatusAccepted {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusAccepted, createBusyRec.Code, createBusyRec.Body.String())
+	}
+	var busy e2bapi.TemplateRequestResponseV3
+	if err := json.Unmarshal(createBusyRec.Body.Bytes(), &busy); err != nil {
+		t.Fatalf("decode busy template: %v", err)
+	}
+
+	startBusyReq := httptest.NewRequest(
+		http.MethodPost,
+		"/v2/templates/busy-template/builds/"+busy.BuildID,
+		bytes.NewBufferString(`{"fromImage":"ubuntu:22.04","steps":[{"type":"RUN","args":["sleep 30"]}]}`),
+	)
+	startBusyRec := httptest.NewRecorder()
+	app.ServeHTTP(startBusyRec, startBusyReq)
+	if startBusyRec.Code != http.StatusAccepted {
+		t.Fatalf("expected first build status %d, got %d: %s", http.StatusAccepted, startBusyRec.Code, startBusyRec.Body.String())
+	}
+	waitForSignal(t, runtime.startBuildEntered, "runtime start build entered")
+
+	createBlockedReq := httptest.NewRequest(http.MethodPost, "/v3/templates", bytes.NewBufferString(`{"name":"blocked-template"}`))
+	createBlockedRec := httptest.NewRecorder()
+	app.ServeHTTP(createBlockedRec, createBlockedReq)
+	if createBlockedRec.Code != http.StatusAccepted {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusAccepted, createBlockedRec.Code, createBlockedRec.Body.String())
+	}
+	var blocked e2bapi.TemplateRequestResponseV3
+	if err := json.Unmarshal(createBlockedRec.Body.Bytes(), &blocked); err != nil {
+		t.Fatalf("decode blocked template: %v", err)
+	}
+
+	startBlockedReq := httptest.NewRequest(
+		http.MethodPost,
+		"/v2/templates/blocked-template/builds/"+blocked.BuildID,
+		bytes.NewBufferString(`{"fromImage":"ubuntu:22.04","steps":[{"type":"RUN","args":["echo ok"]}]}`),
+	)
+	startBlockedRec := httptest.NewRecorder()
+	app.ServeHTTP(startBlockedRec, startBlockedReq)
+	if startBlockedRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second build status %d, got %d: %s", http.StatusTooManyRequests, startBlockedRec.Code, startBlockedRec.Body.String())
+	}
+
+	close(runtime.releaseStartBuild)
+	waitForSignal(t, runtime.startBuildReturned, "runtime start build returned")
+	if len(runtime.startBuildRequests) != 1 {
+		t.Fatalf("expected only one runtime build call, got %#v", runtime.startBuildRequests)
+	}
+}
+
+func TestAppShutdownCancelsRunningTemplateBuild(t *testing.T) {
+	runtime := &recordingTemplateBuilderRuntime{
+		startBuildEntered:  make(chan struct{}),
+		releaseStartBuild:  make(chan struct{}),
+		startBuildReturned: make(chan struct{}),
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	shutdowner, ok := app.(interface {
+		Shutdown(context.Context) error
+	})
+	if !ok {
+		t.Fatal("expected app to support shutdown")
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/templates", bytes.NewBufferString(`{"name":"shutdown-template"}`))
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusAccepted, createRec.Code, createRec.Body.String())
+	}
+	var created e2bapi.TemplateRequestResponseV3
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created template: %v", err)
+	}
+
+	startReq := httptest.NewRequest(
+		http.MethodPost,
+		"/v2/templates/shutdown-template/builds/"+created.BuildID,
+		bytes.NewBufferString(`{"fromImage":"ubuntu:22.04","steps":[{"type":"RUN","args":["sleep 30"]}]}`),
+	)
+	startRec := httptest.NewRecorder()
+	app.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("expected start status %d, got %d: %s", http.StatusAccepted, startRec.Code, startRec.Body.String())
+	}
+	waitForSignal(t, runtime.startBuildEntered, "runtime start build entered")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := shutdowner.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown app: %v", err)
+	}
+	waitForSignal(t, runtime.startBuildReturned, "runtime start build returned")
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/templates/shutdown-template/builds/"+created.BuildID+"/status", nil)
+	statusRec := httptest.NewRecorder()
+	app.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status response %d, got %d: %s", http.StatusOK, statusRec.Code, statusRec.Body.String())
+	}
+	var buildInfo e2bapi.TemplateBuildInfo
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &buildInfo); err != nil {
+		t.Fatalf("decode build info: %v", err)
+	}
+	if buildInfo.Status != e2bapi.TemplateBuildStatusError {
+		t.Fatalf("expected shutdown build to be marked error, got %#v", buildInfo)
+	}
+}
+
 func TestTemplateCopyUploadIsPassedToRuntimeBuilder(t *testing.T) {
 	runtime := &recordingTemplateBuilderRuntime{startBuildReturned: make(chan struct{})}
 	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
@@ -2201,7 +2397,11 @@ func (r *recordingTemplateBuilderRuntime) StartTemplateBuildV2(ctx context.Conte
 		close(r.startBuildEntered)
 	}
 	if r.releaseStartBuild != nil {
-		<-r.releaseStartBuild
+		select {
+		case <-r.releaseStartBuild:
+		case <-ctx.Done():
+			return GatewayTemplate{}, nil, ctx.Err()
+		}
 	}
 	template.ImageRef = "registry.example.test/" + template.TemplateID + ":latest"
 	template.BuildID = buildID
