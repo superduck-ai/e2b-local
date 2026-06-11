@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -41,7 +44,9 @@ type GatewayTemplateBuildRecord struct {
 type managedTemplateFile struct {
 	TemplateID string
 	Hash       string
-	Data       []byte
+	Path       string
+	Size       int64
+	SHA256     string
 	CreatedAt  time.Time
 }
 
@@ -343,10 +348,60 @@ func (s *GatewayManagementStore) CreateTemplateFileUpload(templateID string, has
 }
 
 func (s *GatewayManagementStore) StoreTemplateFileUpload(templateID string, hash string, token string, data []byte) (bool, error) {
+	return s.StoreTemplateFileUploadReader(templateID, hash, token, bytes.NewReader(data))
+}
+
+func (s *GatewayManagementStore) StoreTemplateFileUploadReader(templateID string, hash string, token string, reader io.Reader) (bool, error) {
+	templateID = strings.TrimSpace(templateID)
+	hash = strings.TrimSpace(hash)
+	token = strings.TrimSpace(token)
+
+	s.mu.Lock()
+	upload, ok := s.templateUploads[token]
+	if !ok {
+		s.mu.Unlock()
+		return false, nil
+	}
+	if time.Now().UTC().After(upload.ExpiresAt) {
+		delete(s.templateUploads, upload.Token)
+		s.mu.Unlock()
+		return false, nil
+	}
+	if upload.TemplateID != templateID || upload.Hash != hash {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.mu.Unlock()
+
+	tempPath, size, sha256Sum, err := writeTemplateUploadTemp(reader)
+	if err != nil {
+		return true, err
+	}
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	file := TemplateBuildFile{
+		TemplateID: templateID,
+		Hash:       hash,
+		Path:       tempPath,
+		Size:       size,
+		SHA256:     sha256Sum,
+	}
+	if err := validateTemplateUploadHash(hash, sha256Sum); err != nil {
+		return true, err
+	}
+	if err := ValidateTemplateBuildFileArchive(file); err != nil {
+		return true, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	upload, ok := s.templateUploads[strings.TrimSpace(token)]
+	upload, ok = s.templateUploads[token]
 	if !ok {
 		return false, nil
 	}
@@ -354,16 +409,18 @@ func (s *GatewayManagementStore) StoreTemplateFileUpload(templateID string, hash
 		delete(s.templateUploads, upload.Token)
 		return false, nil
 	}
-	if upload.TemplateID != strings.TrimSpace(templateID) || upload.Hash != strings.TrimSpace(hash) {
+	if upload.TemplateID != templateID || upload.Hash != hash {
 		return false, nil
 	}
 
 	key := templateFileKey(templateID, hash)
 	previousFile, previousFileOK := s.templateFiles[key]
 	s.templateFiles[key] = managedTemplateFile{
-		TemplateID: strings.TrimSpace(templateID),
-		Hash:       strings.TrimSpace(hash),
-		Data:       append([]byte(nil), data...),
+		TemplateID: templateID,
+		Hash:       hash,
+		Path:       tempPath,
+		Size:       size,
+		SHA256:     sha256Sum,
 		CreatedAt:  time.Now().UTC(),
 	}
 	delete(s.templateUploads, upload.Token)
@@ -375,6 +432,10 @@ func (s *GatewayManagementStore) StoreTemplateFileUpload(templateID string, hash
 		}
 		s.templateUploads[upload.Token] = upload
 		return true, err
+	}
+	cleanupTemp = false
+	if previousFileOK {
+		cleanupManagedTemplateFile(previousFile)
 	}
 	return true, nil
 }
@@ -390,7 +451,9 @@ func (s *GatewayManagementStore) TemplateFile(templateID string, hash string) (T
 	return TemplateBuildFile{
 		TemplateID: file.TemplateID,
 		Hash:       file.Hash,
-		Data:       append([]byte(nil), file.Data...),
+		Path:       file.Path,
+		Size:       file.Size,
+		SHA256:     file.SHA256,
 	}, true
 }
 
@@ -476,4 +539,10 @@ func normalizedTags(tags []string) []string {
 
 func templateFileKey(templateID string, hash string) string {
 	return strings.TrimSpace(templateID) + "/" + strings.TrimSpace(hash)
+}
+
+func cleanupManagedTemplateFile(file managedTemplateFile) {
+	if path := strings.TrimSpace(file.Path); path != "" {
+		_ = os.Remove(path)
+	}
 }

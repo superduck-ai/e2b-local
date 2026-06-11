@@ -1654,8 +1654,13 @@ func TestTemplateCopyUploadIsPassedToRuntimeBuilder(t *testing.T) {
 	if len(runtime.startBuildFiles) != 1 || len(runtime.startBuildFiles[0]) != 1 {
 		t.Fatalf("expected runtime builder to receive uploaded file, got %#v", runtime.startBuildFiles)
 	}
-	if runtime.startBuildFiles[0][0].Hash != hash || !bytes.Equal(runtime.startBuildFiles[0][0].Data, archive) {
-		t.Fatalf("unexpected uploaded file forwarded to builder: %#v", runtime.startBuildFiles[0][0])
+	forwardedFile := runtime.startBuildFiles[0][0]
+	forwardedData, err := forwardedFile.ReadAll()
+	if err != nil {
+		t.Fatalf("read uploaded file forwarded to builder: %v", err)
+	}
+	if forwardedFile.Hash != hash || !bytes.Equal(forwardedData, archive) {
+		t.Fatalf("unexpected uploaded file forwarded to builder: %#v", forwardedFile)
 	}
 }
 

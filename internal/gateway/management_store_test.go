@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -39,7 +42,8 @@ func TestGatewayManagementStoreTracksManagedResourcesInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create upload token: %v", err)
 	}
-	stored, err := store.StoreTemplateFileUpload("managed-template", "hash", uploadToken, []byte("file-data"))
+	archive := gzipTarBytes(t, map[string]string{"src/file.txt": "file-data"})
+	stored, err := store.StoreTemplateFileUpload("managed-template", "hash", uploadToken, archive)
 	if err != nil {
 		t.Fatalf("store template file upload: %v", err)
 	}
@@ -63,10 +67,55 @@ func TestGatewayManagementStoreTracksManagedResourcesInMemory(t *testing.T) {
 		t.Fatalf("unexpected template build logs: %#v", logs)
 	}
 	file, ok := store.TemplateFile("managed-template", "hash")
-	if !ok || string(file.Data) != "file-data" {
+	if !ok {
 		t.Fatalf("unexpected template file: ok=%t file=%#v", ok, file)
+	}
+	data, err := file.ReadAll()
+	if err != nil {
+		t.Fatalf("read template file: %v", err)
+	}
+	if !bytes.Equal(data, archive) {
+		t.Fatalf("unexpected template file data: %d bytes", len(data))
 	}
 	if store.NodeStatus(localNodeID) != e2bapi.NodeStatusDraining {
 		t.Fatalf("expected node status to be draining, got %q", store.NodeStatus(localNodeID))
+	}
+}
+
+func TestGatewayManagementStoreValidatesRecognizedTemplateUploadHash(t *testing.T) {
+	store := NewGatewayManagementStore()
+	archive := gzipTarBytes(t, map[string]string{"src/file.txt": "file-data"})
+	sum := sha256.Sum256(archive)
+	hash := hex.EncodeToString(sum[:])
+
+	uploadToken, err := store.CreateTemplateFileUpload("managed-template", hash)
+	if err != nil {
+		t.Fatalf("create upload token: %v", err)
+	}
+	stored, err := store.StoreTemplateFileUpload("managed-template", hash, uploadToken, archive)
+	if err != nil {
+		t.Fatalf("store template file upload: %v", err)
+	}
+	if !stored {
+		t.Fatal("expected template file upload to be stored")
+	}
+
+	badHash := "0000000000000000000000000000000000000000000000000000000000000000"
+	badUploadToken, err := store.CreateTemplateFileUpload("managed-template", badHash)
+	if err != nil {
+		t.Fatalf("create bad upload token: %v", err)
+	}
+	stored, err = store.StoreTemplateFileUpload("managed-template", badHash, badUploadToken, archive)
+	if err == nil {
+		t.Fatal("expected mismatched template file upload hash to fail")
+	}
+	if !stored {
+		t.Fatal("expected matching upload token before hash validation failure")
+	}
+	if status := GatewayErrorStatus(err, 0); status != 400 {
+		t.Fatalf("expected bad hash status 400, got %d: %v", status, err)
+	}
+	if store.TemplateFilePresent("managed-template", badHash) {
+		t.Fatal("expected mismatched template file upload not to be stored")
 	}
 }

@@ -363,12 +363,6 @@ type SandboxRuntimeTemplateBuildStarter interface {
 	StartTemplateBuildV2(ctx context.Context, template GatewayTemplate, buildID string, req e2bapi.TemplateBuildStartV2, files []TemplateBuildFile) (GatewayTemplate, []e2bapi.BuildLogEntry, error)
 }
 
-type TemplateBuildFile struct {
-	TemplateID string
-	Hash       string
-	Data       []byte
-}
-
 type GatewayError struct {
 	Status  int
 	Message string
