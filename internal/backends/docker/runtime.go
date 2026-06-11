@@ -13,7 +13,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -551,6 +550,9 @@ func (r *DockerRuntime) buildTemplateFromDockerfile(ctx context.Context, templat
 	buildContext, err := dockerBuildContext(opts.Dockerfile, opts.Files...)
 	if err != nil {
 		return GatewayTemplate{}, nil, err
+	}
+	if closer, ok := buildContext.(io.Closer); ok {
+		defer closer.Close()
 	}
 	labels := dockerTemplateLabels(template)
 	if strings.TrimSpace(opts.StartCmd) != "" {
@@ -1156,41 +1158,58 @@ func templateStepArgs(step e2bapi.TemplateStep) []string {
 }
 
 func dockerBuildContext(dockerfile string, files ...TemplateBuildFile) (io.Reader, error) {
-	var buf bytes.Buffer
-	writer := tar.NewWriter(&buf)
+	reader, writer := io.Pipe()
+	go func() {
+		tarWriter := tar.NewWriter(writer)
+		err := writeDockerBuildContext(tarWriter, dockerfile, files...)
+		if closeErr := tarWriter.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+		_ = writer.Close()
+	}()
+	return reader, nil
+}
+
+func writeDockerBuildContext(writer *tar.Writer, dockerfile string, files ...TemplateBuildFile) error {
 	data := []byte(dockerfile)
 	if err := writer.WriteHeader(&tar.Header{
 		Name: "Dockerfile",
 		Mode: 0o644,
 		Size: int64(len(data)),
 	}); err != nil {
-		_ = writer.Close()
-		return nil, fmt.Errorf("write docker build context header: %w", err)
+		return fmt.Errorf("write docker build context header: %w", err)
 	}
 	if _, err := writer.Write(data); err != nil {
-		_ = writer.Close()
-		return nil, fmt.Errorf("write dockerfile to build context: %w", err)
+		return fmt.Errorf("write dockerfile to build context: %w", err)
 	}
 	for _, file := range files {
 		if err := appendTemplateFileToDockerBuildContext(writer, file); err != nil {
-			_ = writer.Close()
-			return nil, err
+			return err
 		}
 	}
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("close docker build context: %w", err)
-	}
-	return bytes.NewReader(buf.Bytes()), nil
+	return nil
 }
 
 func appendTemplateFileToDockerBuildContext(writer *tar.Writer, file TemplateBuildFile) error {
-	gzipReader, err := gzip.NewReader(bytes.NewReader(file.Data))
+	archiveReader, err := file.Open()
+	if err != nil {
+		return fmt.Errorf("open uploaded template file archive %s: %w", file.Hash, err)
+	}
+	defer archiveReader.Close()
+
+	gzipReader, err := gzip.NewReader(archiveReader)
 	if err != nil {
 		return fmt.Errorf("open uploaded template file archive %s: %w", file.Hash, err)
 	}
 	defer gzipReader.Close()
 
 	reader := tar.NewReader(gzipReader)
+	entryCount := 0
+	var uncompressedBytes int64
 	for {
 		header, err := reader.Next()
 		if err != nil {
@@ -1200,6 +1219,10 @@ func appendTemplateFileToDockerBuildContext(writer *tar.Writer, file TemplateBui
 			return fmt.Errorf("read uploaded template file archive %s: %w", file.Hash, err)
 		}
 
+		entryCount++
+		if entryCount > gateway.MaxTemplateArchiveEntries() {
+			return fmt.Errorf("uploaded template file archive %s contains more than %d entries", file.Hash, gateway.MaxTemplateArchiveEntries())
+		}
 		name, ok := safeBuildContextTarName(header.Name)
 		if !ok {
 			return fmt.Errorf("uploaded template file archive %s contains unsafe path %q", file.Hash, header.Name)
@@ -1214,24 +1237,32 @@ func appendTemplateFileToDockerBuildContext(writer *tar.Writer, file TemplateBui
 			}
 			copiedHeader.Linkname = linkName
 		}
+		if copiedHeader.Typeflag == tar.TypeReg || copiedHeader.Typeflag == tar.TypeRegA {
+			if copiedHeader.Size < 0 {
+				return fmt.Errorf("uploaded template file archive %s contains invalid size for %q", file.Hash, copiedHeader.Name)
+			}
+			if copiedHeader.Size > gateway.MaxTemplateArchiveUncompressedBytes()-uncompressedBytes {
+				return fmt.Errorf("uploaded template file archive %s exceeds %d uncompressed bytes", file.Hash, gateway.MaxTemplateArchiveUncompressedBytes())
+			}
+		}
 		if err := writer.WriteHeader(&copiedHeader); err != nil {
 			return fmt.Errorf("write uploaded template file %s to build context: %w", copiedHeader.Name, err)
 		}
 		if copiedHeader.Typeflag == tar.TypeReg || copiedHeader.Typeflag == tar.TypeRegA {
-			if _, err := io.Copy(writer, reader); err != nil {
+			n, err := io.Copy(writer, reader)
+			if err != nil {
 				return fmt.Errorf("copy uploaded template file %s to build context: %w", copiedHeader.Name, err)
+			}
+			uncompressedBytes += n
+			if uncompressedBytes > gateway.MaxTemplateArchiveUncompressedBytes() {
+				return fmt.Errorf("uploaded template file archive %s exceeds %d uncompressed bytes", file.Hash, gateway.MaxTemplateArchiveUncompressedBytes())
 			}
 		}
 	}
 }
 
 func safeBuildContextTarName(name string) (string, bool) {
-	name = strings.ReplaceAll(strings.TrimSpace(name), "\\", "/")
-	name = strings.TrimPrefix(path.Clean("/"+name), "/")
-	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, "../") {
-		return "", false
-	}
-	return name, true
+	return gateway.SafeTemplateBuildContextTarName(name)
 }
 
 func dockerTemplateLabels(template GatewayTemplate) map[string]string {

@@ -2,7 +2,7 @@ package gateway
 
 import "testing"
 
-func TestVolumeResponsesSynthesizeCompatTokenFromVolumeID(t *testing.T) {
+func TestAPIVolumeResponsesSynthesizeCompatTokenFromVolumeID(t *testing.T) {
 	volume := RuntimeVolume{
 		VolumeID: "vol-1",
 		Name:     "data",
@@ -12,14 +12,9 @@ func TestVolumeResponsesSynthesizeCompatTokenFromVolumeID(t *testing.T) {
 	if apiPayload.Token != "compat-volume-token-vol-1" {
 		t.Fatalf("expected synthesized api token, got %#v", apiPayload)
 	}
-
-	appPayload := (&App{}).volumeResponse(volume)
-	if appPayload.Token != "compat-volume-token-vol-1" {
-		t.Fatalf("expected synthesized app token, got %#v", appPayload)
-	}
 }
 
-func TestVolumeResponsesReturnEmptyCompatTokenWithoutVolumeID(t *testing.T) {
+func TestAPIVolumeResponsesReturnEmptyCompatTokenWithoutVolumeID(t *testing.T) {
 	volume := RuntimeVolume{
 		VolumeID: " ",
 		Name:     "data",
@@ -27,8 +22,5 @@ func TestVolumeResponsesReturnEmptyCompatTokenWithoutVolumeID(t *testing.T) {
 
 	if got := apiVolumeAndToken(volume).Token; got != "" {
 		t.Fatalf("expected empty api token, got %q", got)
-	}
-	if got := (&App{}).volumeResponse(volume).Token; got != "" {
-		t.Fatalf("expected empty app token, got %q", got)
 	}
 }

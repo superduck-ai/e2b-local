@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -28,6 +29,8 @@ var (
 	}
 	listenAndServe = http.ListenAndServe
 )
+
+const appShutdownTimeout = 30 * time.Second
 
 func loadEnv() {
 	envFile := ".env"
@@ -150,6 +153,7 @@ func serveWithConfig(configPath string, logger *log.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to create app: %w", err)
 	}
+	defer shutdownGatewayApp(app, logger)
 
 	logger.Printf("starting e2b-local addr=%s runtime=%s",
 		cfg.Server.Addr,
@@ -157,6 +161,20 @@ func serveWithConfig(configPath string, logger *log.Logger) error {
 	)
 
 	return listenAndServe(cfg.Server.Addr, app)
+}
+
+func shutdownGatewayApp(app http.Handler, logger *log.Logger) {
+	shutdowner, ok := app.(interface {
+		Shutdown(context.Context) error
+	})
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), appShutdownTimeout)
+	defer cancel()
+	if err := shutdowner.Shutdown(ctx); err != nil {
+		logger.Printf("gateway shutdown failed: %v", err)
+	}
 }
 
 func executeVolumeCreate(ctx context.Context, cfg gateway.Config, name string, stdout io.Writer, stderr io.Writer, logger *log.Logger) error {
