@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -415,6 +416,18 @@ func (s *GatewayManagementStore) StoreTemplateFileUploadReader(templateID string
 
 	key := templateFileKey(templateID, hash)
 	previousFile, previousFileOK := s.templateFiles[key]
+	if previousFileOK {
+		if strings.EqualFold(previousFile.SHA256, sha256Sum) {
+			delete(s.templateUploads, upload.Token)
+			if err := s.saveLocked(); err != nil {
+				s.templateUploads[upload.Token] = upload
+				return true, err
+			}
+			return true, nil
+		}
+		return true, gatewayError(http.StatusConflict, "template file upload hash already exists with different content")
+	}
+
 	s.templateFiles[key] = managedTemplateFile{
 		TemplateID: templateID,
 		Hash:       hash,
@@ -434,9 +447,6 @@ func (s *GatewayManagementStore) StoreTemplateFileUploadReader(templateID string
 		return true, err
 	}
 	cleanupTemp = false
-	if previousFileOK {
-		cleanupManagedTemplateFile(previousFile)
-	}
 	return true, nil
 }
 
