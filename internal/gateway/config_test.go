@@ -210,6 +210,146 @@ orbstack:
 	}
 }
 
+func TestLoadConfigReadsAppleContainerRuntime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := []byte(`
+runtime:
+  type: "applecontainer"
+
+applecontainer:
+  container_name_prefix: "e2b-sandbox-"
+  envd_binary: "envd-bin/envd-linux-arm64"
+  envd_port: 49983
+  health_timeout_seconds: 60
+  default_cpus: 4
+  default_memory_mb: 2048
+  templates:
+    ubuntu-2404:
+      image: "docker.io/library/ubuntu:24.04"
+      cpus: 2
+      memory_mb: 1024
+      start_cmd: "sleep infinity"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Runtime.Type != "applecontainer" {
+		t.Fatalf("expected applecontainer runtime, got %q", cfg.Runtime.Type)
+	}
+	if cfg.AppleContainer.ContainerNamePrefix != "e2b-sandbox-" {
+		t.Fatalf("expected applecontainer container name prefix %q, got %q", "e2b-sandbox-", cfg.AppleContainer.ContainerNamePrefix)
+	}
+	if want := filepath.Join(dir, "envd-bin", "envd-linux-arm64"); cfg.AppleContainer.EnvdBinary != want {
+		t.Fatalf("expected applecontainer envd path %q, got %q", want, cfg.AppleContainer.EnvdBinary)
+	}
+	if cfg.AppleContainer.EnvdPort != 49983 {
+		t.Fatalf("expected applecontainer envd port %d, got %d", 49983, cfg.AppleContainer.EnvdPort)
+	}
+	if cfg.AppleContainer.HealthTimeoutSeconds != 60 {
+		t.Fatalf("expected applecontainer health timeout %d, got %d", 60, cfg.AppleContainer.HealthTimeoutSeconds)
+	}
+	if cfg.AppleContainer.DefaultCPUs != 4 {
+		t.Fatalf("expected applecontainer default cpus %d, got %d", 4, cfg.AppleContainer.DefaultCPUs)
+	}
+	if cfg.AppleContainer.DefaultMemoryMB != 2048 {
+		t.Fatalf("expected applecontainer default memory %d, got %d", 2048, cfg.AppleContainer.DefaultMemoryMB)
+	}
+	template := cfg.AppleContainer.Templates["ubuntu-2404"]
+	if template.Image != "docker.io/library/ubuntu:24.04" {
+		t.Fatalf("expected template image, got %#v", template)
+	}
+	if template.CPUs != 2 {
+		t.Fatalf("expected template cpus %d, got %d", 2, template.CPUs)
+	}
+	if template.MemoryMB != 1024 {
+		t.Fatalf("expected template memory %d, got %d", 1024, template.MemoryMB)
+	}
+	if template.StartCmd != "sleep infinity" {
+		t.Fatalf("expected template start command, got %#v", template)
+	}
+}
+
+func TestAppleContainerRuntimeConfigValidate(t *testing.T) {
+	validConfig := func() AppleContainerRuntimeConfig {
+		return AppleContainerRuntimeConfig{
+			ContainerNamePrefix:  "e2b-sandbox-",
+			EnvdBinary:           "/tmp/e2b-local-envd",
+			EnvdPort:             49983,
+			HealthTimeoutSeconds: 60,
+			DefaultCPUs:          4,
+			DefaultMemoryMB:      1024,
+			Templates: map[string]AppleContainerTemplateConfig{
+				"alpine": {Image: "docker.io/library/alpine:3.20"},
+			},
+		}
+	}
+
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("expected valid applecontainer config, got %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*AppleContainerRuntimeConfig)
+	}{
+		{
+			name:   "missing prefix",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.ContainerNamePrefix = "" },
+		},
+		{
+			name:   "relative envd binary",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.EnvdBinary = "envd-bin/envd-linux-arm64" },
+		},
+		{
+			name:   "zero envd port",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.EnvdPort = 0 },
+		},
+		{
+			name:   "large envd port",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.EnvdPort = 70000 },
+		},
+		{
+			name:   "non-positive health timeout",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.HealthTimeoutSeconds = 0 },
+		},
+		{
+			name:   "non-positive default cpus",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.DefaultCPUs = 0 },
+		},
+		{
+			name:   "non-positive default memory",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.DefaultMemoryMB = 0 },
+		},
+		{
+			name:   "empty templates",
+			mutate: func(cfg *AppleContainerRuntimeConfig) { cfg.Templates = nil },
+		},
+		{
+			name: "template missing image",
+			mutate: func(cfg *AppleContainerRuntimeConfig) {
+				cfg.Templates = map[string]AppleContainerTemplateConfig{"alpine": {}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
 func TestPoolRuntimeTypeIsRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`

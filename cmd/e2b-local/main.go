@@ -16,6 +16,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 
+	_ "e2b-local/internal/backends/applecontainer"
 	_ "e2b-local/internal/backends/docker"
 	_ "e2b-local/internal/backends/orbstack"
 	"e2b-local/internal/e2bapi"
