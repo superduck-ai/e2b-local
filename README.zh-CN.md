@@ -170,7 +170,7 @@ backend 通过 `RegisterSandboxRuntimeFactory` 注册，所以 runtime 逻辑不
 - `envd-bin/envd-linux-amd64`
 - `envd-bin/envd-linux-arm64`
 
-Docker 会 inspect 选中镜像的架构，并把匹配的 `envd` 二进制 bind-mount 到每个 sandbox 容器的 `/usr/local/bin/envd`。OrbStack 会把配置的二进制复制到每个 sandbox VM，并在启动 systemd service 前安装为 `/usr/local/bin/envd`。Apple Container 会通过 XPC `copyIn` 把配置的二进制复制进每个 VM-backed container，并作为 container process 启动。
+Docker 会 inspect 选中镜像的架构，并把匹配的 `envd` 二进制 bind-mount 到每个 sandbox 容器的 `/usr/local/bin/envd`。OrbStack 会把配置的二进制复制到每个 sandbox VM，并在启动 systemd service 前安装为 `/usr/local/bin/envd`。Apple Container 会通过 XPC `copyIn` 把配置的二进制复制进每个 VM-backed container；如果选中 template 设置了 `prebaked_envd_path` 则跳过复制，然后作为 container process 启动 envd。
 
 ## 配置
 
@@ -199,7 +199,7 @@ docker:
 - `docker.envd_binary` 是可选 override。留空时 gateway 会按选中镜像架构自动选择 `envd-bin/envd-linux-amd64` 或 `envd-bin/envd-linux-arm64`；显式设置时支持相对配置文件路径。
 - `orbstack.envd_binary` 可以写相对路径，gateway 会先解析再复制进 VM。
 - `orbstack.volume_host_path` 存放 macOS 本地 volume 目录，并支持 `~` 和相对配置文件路径。
-- `applecontainer.envd_binary` 可以写相对路径，gateway 会先解析再复制进 Apple Container sandbox。
+- `applecontainer.envd_binary` 可以写相对路径。除非选中 template 设置了 `prebaked_envd_path`，gateway 会先解析再复制进 Apple Container sandbox。
 - `applecontainer.templates` 把本地 template ID 映射到 Apple Container image reference。gateway 不会自动 pull 镜像，请先用 `container image pull` 拉到本机。
 
 ## Docker envd 调试脚本
@@ -302,6 +302,8 @@ applecontainer:
   templates:
     debian-bookworm-slim:
       image: "docker.io/library/debian:bookworm-slim"
+      # 如果镜像内已经预烘焙 envd，可以设置这个路径。
+      # prebaked_envd_path: "/usr/local/bin/envd"
 ```
 
 系统前置条件：
@@ -321,9 +323,21 @@ container image pull --platform linux/arm64 docker.io/library/debian:bookworm-sl
 - Apple Container 需要显示 `status running`；backend 会直接通过 XPC 访问 `com.apple.container.apiserver` 和 `com.apple.container.core.container-core-images`。
 - 必须配置默认 kernel。如果 `container run` 报 `default kernel not configured`，执行 `container system kernel set --recommended`。
 - Template image 必须先通过 Apple Container 拉到本机。只测试生命周期时可以用 Alpine 这类小镜像；E2B SDK command execution 需要镜像内有 `/bin/bash`，`debian:bookworm-slim` 已验证可用。
-- envd 使用显式 localhost published port，因为 Apple Container 不支持 `hostPort: 0` 自动分配。
+- 除非选中 template 设置了 `prebaked_envd_path`，backend 会从 `applecontainer.envd_binary` 复制 envd。
+- envd 使用显式 localhost published port，因为 Apple Container 不支持 `hostPort: 0` 自动分配；如果 Apple Container 返回端口冲突，backend 会换端口重试。
 - `pause` 映射为 Apple Container stop；`resume` 会 bootstrap 既有 container，并复用已持久化的 published port。
 - Volume 使用 Apple Container named volume，并在创建 sandbox 时按请求挂载。
+
+能力矩阵：
+
+| 能力 | Apple Container backend |
+| ---- | ----------------------- |
+| Create/pause/resume/delete/restore | 支持 |
+| Commands、filesystem、PTY、Git | 通过直连 `envdURL` 支持 |
+| Volume create/list/get/delete | 通过 Apple Container named volume 支持 |
+| Volume mounts | 创建 sandbox 时支持 |
+| Snapshots | 不支持 |
+| Runtime network updates | 不支持 |
 
 ## 测试
 

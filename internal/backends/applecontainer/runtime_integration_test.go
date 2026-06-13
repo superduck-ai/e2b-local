@@ -187,7 +187,7 @@ func appleContainerIntegrationConfig(t *testing.T) AppleContainerRuntimeConfig {
 
 	cfg := gateway.DefaultConfig().AppleContainer
 	cfg.ContainerNamePrefix = fmt.Sprintf("e2b-it-apple-%d-", time.Now().UTC().UnixNano())
-	cfg.HealthTimeoutSeconds = 120
+	cfg.HealthTimeoutSeconds = 240
 	cfg.Templates = map[string]AppleContainerTemplateConfig{
 		appleContainerIntegrationTemplateID(): {
 			Image: appleContainerIntegrationImage(),

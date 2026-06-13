@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -94,10 +95,11 @@ type AppleContainerRuntimeConfig struct {
 }
 
 type AppleContainerTemplateConfig struct {
-	Image    string `yaml:"image"`
-	CPUs     int    `yaml:"cpus"`
-	MemoryMB int    `yaml:"memory_mb"`
-	StartCmd string `yaml:"start_cmd"`
+	Image            string `yaml:"image"`
+	CPUs             int    `yaml:"cpus"`
+	MemoryMB         int    `yaml:"memory_mb"`
+	StartCmd         string `yaml:"start_cmd"`
+	PrebakedEnvdPath string `yaml:"prebaked_envd_path"`
 }
 
 func DefaultConfig() Config {
@@ -376,10 +378,7 @@ func (c AppleContainerRuntimeConfig) Validate() error {
 	if strings.TrimSpace(c.ContainerNamePrefix) == "" {
 		return fmt.Errorf("applecontainer.container_name_prefix is required")
 	}
-	if strings.TrimSpace(c.EnvdBinary) == "" {
-		return fmt.Errorf("applecontainer.envd_binary is required")
-	}
-	if !filepath.IsAbs(c.EnvdBinary) {
+	if strings.TrimSpace(c.EnvdBinary) != "" && !filepath.IsAbs(c.EnvdBinary) {
 		return fmt.Errorf("applecontainer.envd_binary must be an absolute path")
 	}
 	if c.EnvdPort <= 0 || c.EnvdPort > 65535 {
@@ -397,6 +396,7 @@ func (c AppleContainerRuntimeConfig) Validate() error {
 	if len(c.Templates) == 0 {
 		return fmt.Errorf("applecontainer.templates is required")
 	}
+	requiresHostEnvdBinary := false
 	for templateID, template := range c.Templates {
 		if strings.TrimSpace(templateID) == "" {
 			return fmt.Errorf("applecontainer.templates keys must not be empty")
@@ -404,6 +404,22 @@ func (c AppleContainerRuntimeConfig) Validate() error {
 		if strings.TrimSpace(template.Image) == "" {
 			return fmt.Errorf("applecontainer.templates.%s.image is required", templateID)
 		}
+		if template.CPUs < 0 {
+			return fmt.Errorf("applecontainer.templates.%s.cpus must not be negative", templateID)
+		}
+		if template.MemoryMB < 0 {
+			return fmt.Errorf("applecontainer.templates.%s.memory_mb must not be negative", templateID)
+		}
+		if prebakedEnvdPath := strings.TrimSpace(template.PrebakedEnvdPath); prebakedEnvdPath != "" {
+			if !path.IsAbs(prebakedEnvdPath) {
+				return fmt.Errorf("applecontainer.templates.%s.prebaked_envd_path must be absolute", templateID)
+			}
+		} else {
+			requiresHostEnvdBinary = true
+		}
+	}
+	if requiresHostEnvdBinary && strings.TrimSpace(c.EnvdBinary) == "" {
+		return fmt.Errorf("applecontainer.envd_binary is required unless every template sets prebaked_envd_path")
 	}
 	return nil
 }

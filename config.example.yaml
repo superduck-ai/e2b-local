@@ -36,6 +36,8 @@ orbstack:
 
 applecontainer:
   container_name_prefix: "e2b-sandbox-"
+  # Required unless every template sets prebaked_envd_path.
+  # The runtime copies this binary into non-prebaked Apple Container sandboxes.
   envd_binary: "envd-bin/envd-linux-arm64"
   envd_port: 49983
   health_timeout_seconds: 60
@@ -48,3 +50,5 @@ applecontainer:
       image: "docker.io/library/debian:bookworm-slim"
       cpus: 4
       memory_mb: 2048
+      # Optional: executable path inside the image when envd is already baked in.
+      # prebaked_envd_path: "/usr/local/bin/envd"

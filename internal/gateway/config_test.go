@@ -295,6 +295,18 @@ func TestAppleContainerRuntimeConfigValidate(t *testing.T) {
 		t.Fatalf("expected valid applecontainer config, got %v", err)
 	}
 
+	prebakedConfig := validConfig()
+	prebakedConfig.EnvdBinary = ""
+	prebakedConfig.Templates = map[string]AppleContainerTemplateConfig{
+		"alpine": {
+			Image:            "docker.io/library/alpine:3.20",
+			PrebakedEnvdPath: "/usr/local/bin/envd",
+		},
+	}
+	if err := prebakedConfig.Validate(); err != nil {
+		t.Fatalf("expected prebaked applecontainer config without envd binary to be valid, got %v", err)
+	}
+
 	tests := []struct {
 		name   string
 		mutate func(*AppleContainerRuntimeConfig)
@@ -335,6 +347,21 @@ func TestAppleContainerRuntimeConfigValidate(t *testing.T) {
 			name: "template missing image",
 			mutate: func(cfg *AppleContainerRuntimeConfig) {
 				cfg.Templates = map[string]AppleContainerTemplateConfig{"alpine": {}}
+			},
+		},
+		{
+			name: "template relative prebaked envd path",
+			mutate: func(cfg *AppleContainerRuntimeConfig) {
+				cfg.EnvdBinary = ""
+				cfg.Templates = map[string]AppleContainerTemplateConfig{
+					"alpine": {Image: "docker.io/library/alpine:3.20", PrebakedEnvdPath: "usr/local/bin/envd"},
+				}
+			},
+		},
+		{
+			name: "missing envd binary for non-prebaked template",
+			mutate: func(cfg *AppleContainerRuntimeConfig) {
+				cfg.EnvdBinary = ""
 			},
 		},
 	}

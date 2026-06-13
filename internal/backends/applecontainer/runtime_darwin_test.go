@@ -25,6 +25,8 @@ type fakeAppleClient struct {
 	volumes     map[string]VolumeConfig
 	snapshots   []ContainerSnapshot
 	createErr   error
+	createErrs  []error
+	startErrs   []error
 	healthErr   error
 	events      []string
 	created     []ContainerConfiguration
@@ -50,6 +52,13 @@ func (f *fakeAppleClient) ResolveImage(ctx context.Context, ref string) (ImageDe
 func (f *fakeAppleClient) ContainerCreate(ctx context.Context, config ContainerConfiguration) error {
 	f.events = append(f.events, "create:"+config.ID)
 	f.created = append(f.created, config)
+	if len(f.createErrs) > 0 {
+		err := f.createErrs[0]
+		f.createErrs = f.createErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	return f.createErr
 }
 
@@ -60,6 +69,13 @@ func (f *fakeAppleClient) ContainerBootstrap(ctx context.Context, id string) err
 
 func (f *fakeAppleClient) ContainerStartProcess(ctx context.Context, containerID, processID string) error {
 	f.events = append(f.events, "start:"+containerID+":"+processID)
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -284,6 +300,115 @@ func TestAppleContainerRuntimeCreateSandboxCleansUpAfterHealthFailure(t *testing
 		t.Fatalf("expected cleanup delete, got %#v", client.deleted)
 	}
 	assertEventBefore(t, client.events, "health:http://127.0.0.1:55322", "delete:e2b-sandbox-sbx123")
+}
+
+func TestAppleContainerRuntimeCreateSandboxRetriesHostPortConflicts(t *testing.T) {
+	envdPath := writeTestAppleEnvdBinary(t)
+	client := &fakeAppleClient{
+		image:      testImageDescription(),
+		createErrs: []error{errors.New("host port is already allocated")},
+	}
+	runtime := newTestAppleRuntime(envdPath, client)
+	ports := []int{55323, 55324}
+	runtime.findFreePort = func() (int, error) {
+		if len(ports) == 0 {
+			t.Fatal("unexpected extra port allocation")
+		}
+		port := ports[0]
+		ports = ports[1:]
+		return port, nil
+	}
+	runtime.checkHealthy = func(ctx context.Context, envdURL string) error {
+		client.events = append(client.events, "health:"+envdURL)
+		return nil
+	}
+
+	info, err := runtime.CreateSandbox(context.Background(), gateway.SandboxRuntimeCreateRequest{
+		SandboxID:  "sbx123",
+		TemplateID: "ubuntu-2404",
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if info.EnvdURL != "http://127.0.0.1:55324" || info.HostPort != "55324" {
+		t.Fatalf("expected retried envd port, got %#v", info)
+	}
+	if len(client.created) != 2 {
+		t.Fatalf("expected two create attempts, got %d", len(client.created))
+	}
+	if client.created[0].PublishedPorts[0].HostPort != 55323 || client.created[1].PublishedPorts[0].HostPort != 55324 {
+		t.Fatalf("unexpected create ports: %#v", client.created)
+	}
+	if len(client.deleted) == 0 || client.deleted[0] != "e2b-sandbox-sbx123" {
+		t.Fatalf("expected cleanup after failed port allocation, deleted=%#v events=%#v", client.deleted, client.events)
+	}
+}
+
+func TestAppleContainerRuntimeCreateSandboxRetriesTransientStartNotFound(t *testing.T) {
+	envdPath := writeTestAppleEnvdBinary(t)
+	client := &fakeAppleClient{
+		image: testImageDescription(),
+		startErrs: []error{
+			&xpcProtocolError{Code: appleErrorCodeNotFound, Message: "container with ID e2b-sandbox-sbx123 not found"},
+		},
+	}
+	runtime := newTestAppleRuntime(envdPath, client)
+	runtime.checkHealthy = func(ctx context.Context, envdURL string) error {
+		client.events = append(client.events, "health:"+envdURL)
+		return nil
+	}
+
+	_, err := runtime.CreateSandbox(context.Background(), gateway.SandboxRuntimeCreateRequest{
+		SandboxID:  "sbx123",
+		TemplateID: "ubuntu-2404",
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	wantStartEvents := []string{
+		"start:e2b-sandbox-sbx123:e2b-sandbox-sbx123",
+		"start:e2b-sandbox-sbx123:e2b-sandbox-sbx123",
+		"start:e2b-sandbox-sbx123:envd",
+	}
+	startEvents := []string{}
+	for _, event := range client.events {
+		if strings.HasPrefix(event, "start:") {
+			startEvents = append(startEvents, event)
+		}
+	}
+	if !reflect.DeepEqual(startEvents, wantStartEvents) {
+		t.Fatalf("unexpected start events:\nwant %#v\ngot  %#v", wantStartEvents, startEvents)
+	}
+}
+
+func TestAppleContainerRuntimeCreateSandboxUsesPrebakedEnvd(t *testing.T) {
+	client := &fakeAppleClient{image: testImageDescription()}
+	runtime := newTestAppleRuntime("", client)
+	runtime.cfg.EnvdBinary = ""
+	template := runtime.cfg.Templates["ubuntu-2404"]
+	template.PrebakedEnvdPath = "/opt/e2b/envd"
+	runtime.cfg.Templates["ubuntu-2404"] = template
+	runtime.checkHealthy = func(ctx context.Context, envdURL string) error { return nil }
+
+	if err := runtime.cfg.Validate(); err != nil {
+		t.Fatalf("prebaked envd config should not require host envd binary: %v", err)
+	}
+	_, err := runtime.CreateSandbox(context.Background(), gateway.SandboxRuntimeCreateRequest{
+		SandboxID:  "sbx123",
+		TemplateID: "ubuntu-2404",
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	for _, event := range client.events {
+		if strings.HasPrefix(event, "copy:") {
+			t.Fatalf("expected prebaked envd path to skip copy: %#v", client.events)
+		}
+	}
+	if len(client.processes) != 1 || client.processes[0].Executable != "/opt/e2b/envd" {
+		t.Fatalf("expected prebaked envd executable, got %#v", client.processes)
+	}
 }
 
 func TestAppleContainerRuntimeCreateSandboxPropagatesVolumeInspectError(t *testing.T) {

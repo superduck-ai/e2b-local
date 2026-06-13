@@ -216,7 +216,7 @@ The repository tracks:
 - `envd-bin/envd-linux-amd64`
 - `envd-bin/envd-linux-arm64`
 
-Docker inspects the selected image architecture and bind-mounts the matching `envd` binary into each sandbox container at `/usr/local/bin/envd`. OrbStack copies the configured binary into each sandbox VM and installs it as `/usr/local/bin/envd` before starting the systemd service. Apple Container copies the configured binary into each VM-backed container with XPC `copyIn` and starts it as a container process.
+Docker inspects the selected image architecture and bind-mounts the matching `envd` binary into each sandbox container at `/usr/local/bin/envd`. OrbStack copies the configured binary into each sandbox VM and installs it as `/usr/local/bin/envd` before starting the systemd service. Apple Container copies the configured binary into each VM-backed container with XPC `copyIn` unless the selected template sets `prebaked_envd_path`, then starts envd as a container process.
 
 ## Configuration
 
@@ -245,7 +245,7 @@ Important fields:
 - `docker.envd_binary` is optional. Empty means the gateway picks `envd-bin/envd-linux-amd64` or `envd-bin/envd-linux-arm64` from the selected image architecture. When set, it can be relative to the config file.
 - `orbstack.envd_binary` can be relative to the config file. The gateway copies it into each VM before installing the service.
 - `orbstack.volume_host_path` stores local volume directories on macOS and supports `~` and config-relative paths.
-- `applecontainer.envd_binary` can be relative to the config file. The gateway copies it into each Apple Container sandbox before starting envd.
+- `applecontainer.envd_binary` can be relative to the config file. The gateway copies it into Apple Container sandboxes unless the selected template sets `prebaked_envd_path`.
 - `applecontainer.templates` maps local template IDs to Apple Container image references. The gateway does not pull images; pull them with `container image pull` first.
 
 ## Docker envd Helper
@@ -348,6 +348,8 @@ applecontainer:
   templates:
     debian-bookworm-slim:
       image: "docker.io/library/debian:bookworm-slim"
+      # Set this when envd is already baked into the image.
+      # prebaked_envd_path: "/usr/local/bin/envd"
 ```
 
 System prerequisites:
@@ -367,9 +369,21 @@ Notes:
 - Apple Container must report `status running`; the backend talks to `com.apple.container.apiserver` and `com.apple.container.core.container-core-images` directly through XPC.
 - A default kernel is required. If `container run` reports `default kernel not configured`, run `container system kernel set --recommended`.
 - Template images must already be pulled with Apple Container. Lifecycle-only smoke tests can use small images such as Alpine, but E2B SDK command execution needs an image with `/bin/bash`; `debian:bookworm-slim` works.
-- envd is exposed with an explicit published localhost port because Apple Container does not allocate `hostPort: 0`.
+- envd is copied from `applecontainer.envd_binary` unless the selected template sets `prebaked_envd_path`.
+- envd is exposed with an explicit published localhost port because Apple Container does not allocate `hostPort: 0`; the runtime retries with a fresh port when Apple Container reports a port conflict.
 - `pause` maps to Apple Container stop, and `resume` bootstraps the existing container and reuses the persisted published port.
 - Volumes use Apple Container named volumes and are mounted with the requested `VolumeMounts` during sandbox creation.
+
+Capability matrix:
+
+| Capability | Apple Container backend |
+| ---------- | ----------------------- |
+| Create/pause/resume/delete/restore | Supported |
+| Commands, filesystem, PTY, Git | Supported through direct `envdURL` |
+| Volume create/list/get/delete | Supported with Apple Container named volumes |
+| Volume mounts | Supported at sandbox creation |
+| Snapshots | Not supported |
+| Runtime network updates | Not supported |
 
 ## Tests
 

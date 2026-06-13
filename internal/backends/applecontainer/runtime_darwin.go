@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/docker/docker/errdefs"
 	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
 type AppleContainerRuntimeConfig = gateway.AppleContainerRuntimeConfig
@@ -77,6 +79,13 @@ const (
 	appleResourceRoleBuiltin              = "builtin"
 	defaultAppleContainerRuntimeHandler   = "container-runtime-linux"
 	defaultAppleContainerVolumeNamePrefix = "e2b-vol-"
+	maxAppleEnvdPortAttempts              = 3
+	appleTransientNotFoundRetryAttempts   = 20
+	appleTransientNotFoundInitialDelay    = 50 * time.Millisecond
+	appleTransientNotFoundMaxDelay        = 500 * time.Millisecond
+	appleContainerOperationLockPoll       = 100 * time.Millisecond
+	appleContainerInspectRetryAttempts    = 10
+	appleContainerInspectRetryDelay       = 100 * time.Millisecond
 )
 
 var _ gateway.SandboxRuntime = (*AppleContainerRuntime)(nil)
@@ -99,7 +108,7 @@ func NewAppleContainerRuntime(cfg AppleContainerRuntimeConfig, logger *log.Logge
 	}
 	client, err := NewXPCClient()
 	if err != nil {
-		return nil, fmt.Errorf("create applecontainer XPC client: %w", err)
+		return nil, fmt.Errorf("connect to Apple Container XPC services; ensure Apple Container is installed and running: %w", err)
 	}
 	return &AppleContainerRuntime{
 		cfg:        cfg,
@@ -124,6 +133,12 @@ func (r *AppleContainerRuntime) Close() {
 }
 
 func (r *AppleContainerRuntime) CreateSandbox(ctx context.Context, req gateway.SandboxRuntimeCreateRequest) (gateway.SandboxRuntimeInfo, error) {
+	releaseOperationLock, err := acquireAppleContainerOperationLock(ctx)
+	if err != nil {
+		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("acquire apple container operation lock: %w", err)
+	}
+	defer releaseOperationLock()
+
 	templateID := strings.TrimSpace(req.TemplateID)
 	if templateID == "" {
 		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("templateID is required")
@@ -140,21 +155,15 @@ func (r *AppleContainerRuntime) CreateSandbox(ctx context.Context, req gateway.S
 		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("resolve apple container image %q: %w", imageRef, err)
 	}
 
-	if err := validateAppleEnvdBinary(r.cfg.EnvdBinary); err != nil {
-		return gateway.SandboxRuntimeInfo{}, err
+	if strings.TrimSpace(template.PrebakedEnvdPath) == "" {
+		if err := validateAppleEnvdBinary(r.cfg.EnvdBinary); err != nil {
+			return gateway.SandboxRuntimeInfo{}, err
+		}
 	}
 
 	volumeMounts, filesystems, err := r.resolveVolumeMounts(ctx, req.VolumeMounts)
 	if err != nil {
 		return gateway.SandboxRuntimeInfo{}, err
-	}
-
-	hostPort, err := r.findFreePort()
-	if err != nil {
-		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("find free envd host port: %w", err)
-	}
-	if hostPort <= 0 || hostPort > 65535 {
-		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("invalid envd host port %d", hostPort)
 	}
 
 	containerID := appleSandboxContainerID(r.cfg, req.SandboxID)
@@ -177,74 +186,96 @@ func (r *AppleContainerRuntime) CreateSandbox(ctx context.Context, req gateway.S
 		memoryMB = r.cfg.DefaultMemoryMB
 	}
 
-	config := ContainerConfiguration{
-		ID:       containerID,
-		Image:    image,
-		Mounts:   filesystems,
-		Labels:   labels,
-		Networks: networks,
-		DNS:      dnsConfiguration(req.AllowInternetAccess),
-		InitProcess: ProcessConfiguration{
-			Executable:         "/bin/sleep",
-			Arguments:          []string{appleInitSleepTime},
-			Environment:        processEnvironment(nil),
-			WorkingDirectory:   "/",
-			Terminal:           false,
-			User:               ProcessUserRoot(),
-			SupplementalGroups: []uint32{},
-			Rlimits:            []any{},
-		},
-		PublishedPorts: []PublishPort{{
-			HostAddress:   appleEnvdHost,
-			HostPort:      uint16(hostPort),
-			ContainerPort: uint16(r.cfg.EnvdPort),
-			Proto:         "tcp",
-			Count:         1,
-		}},
-		Resources: Resources{
-			CPUs:        cpus,
-			MemoryBytes: uint64(memoryMB) * 1024 * 1024,
-			CPUOverhead: 1,
-		},
-		RuntimeHandler: defaultAppleContainerRuntimeHandler,
-	}
-
-	if err := r.client.ContainerCreate(ctx, config); err != nil {
-		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("create apple container %s: %w", containerID, err)
-	}
-
-	cleanup := func() {
-		if err := r.client.ContainerDelete(context.Background(), containerID, true); err != nil {
-			r.logger.Printf("applecontainer cleanup failed container_id=%s error=%v", containerID, err)
+	var lastErr error
+	for attempt := 1; attempt <= maxAppleEnvdPortAttempts; attempt++ {
+		hostPort, err := r.nextEnvdHostPort()
+		if err != nil {
+			return gateway.SandboxRuntimeInfo{}, fmt.Errorf("find free envd host port: %w", err)
 		}
+
+		config := ContainerConfiguration{
+			ID:       containerID,
+			Image:    image,
+			Mounts:   filesystems,
+			Labels:   labels,
+			Networks: networks,
+			DNS:      dnsConfiguration(req.AllowInternetAccess),
+			InitProcess: ProcessConfiguration{
+				Executable:         "/bin/sleep",
+				Arguments:          []string{appleInitSleepTime},
+				Environment:        processEnvironment(nil),
+				WorkingDirectory:   "/",
+				Terminal:           false,
+				User:               ProcessUserRoot(),
+				SupplementalGroups: []uint32{},
+				Rlimits:            []any{},
+			},
+			PublishedPorts: []PublishPort{{
+				HostAddress:   appleEnvdHost,
+				HostPort:      uint16(hostPort),
+				ContainerPort: uint16(r.cfg.EnvdPort),
+				Proto:         "tcp",
+				Count:         1,
+			}},
+			Resources: Resources{
+				CPUs:        cpus,
+				MemoryBytes: uint64(memoryMB) * 1024 * 1024,
+				CPUOverhead: 1,
+			},
+			RuntimeHandler: defaultAppleContainerRuntimeHandler,
+		}
+
+		if err := r.client.ContainerCreate(ctx, config); err != nil {
+			lastErr = fmt.Errorf("create apple container %s: %w", containerID, err)
+			if isPortAllocationError(err) {
+				if attempt < maxAppleEnvdPortAttempts {
+					r.cleanupContainer(containerID)
+					r.logger.Printf("applecontainer retrying sandbox create after host port conflict sandbox_id=%s container_id=%s attempt=%d", req.SandboxID, containerID, attempt)
+					continue
+				}
+				return gateway.SandboxRuntimeInfo{}, fmt.Errorf("create apple container %s after %d host port attempts: %w", containerID, maxAppleEnvdPortAttempts, err)
+			}
+			return gateway.SandboxRuntimeInfo{}, lastErr
+		}
+
+		cleanup := func() {
+			r.cleanupContainer(containerID)
+		}
+
+		if err := r.client.ContainerBootstrap(ctx, containerID); err != nil {
+			cleanup()
+			return gateway.SandboxRuntimeInfo{}, fmt.Errorf("bootstrap apple container %s: %w", containerID, err)
+		}
+		if err := r.startEnvd(ctx, containerID, req.EnvVars, template); err != nil {
+			cleanup()
+			lastErr = err
+			if isAppleNotFound(err) && attempt < maxAppleEnvdPortAttempts {
+				r.logger.Printf("applecontainer retrying sandbox create after transient not_found sandbox_id=%s container_id=%s attempt=%d", req.SandboxID, containerID, attempt)
+				continue
+			}
+			return gateway.SandboxRuntimeInfo{}, err
+		}
+
+		envdURL := appleEnvdURL(strconv.Itoa(hostPort))
+		if err := r.healthCheck(ctx, envdURL); err != nil {
+			cleanup()
+			return gateway.SandboxRuntimeInfo{}, fmt.Errorf("envd health check: %w", err)
+		}
+
+		r.logger.Printf("applecontainer sandbox started sandbox_id=%s container_id=%s envd_url=%s", req.SandboxID, containerID, envdURL)
+
+		return gateway.SandboxRuntimeInfo{
+			SandboxID:     req.SandboxID,
+			EnvdURL:       envdURL,
+			ContainerID:   containerID,
+			ContainerName: containerID,
+			HostPort:      strconv.Itoa(hostPort),
+			MachineID:     containerID,
+			VolumeMounts:  volumeMounts,
+		}, nil
 	}
 
-	if err := r.client.ContainerBootstrap(ctx, containerID); err != nil {
-		cleanup()
-		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("bootstrap apple container %s: %w", containerID, err)
-	}
-	if err := r.startEnvd(ctx, containerID, req.EnvVars, template.StartCmd); err != nil {
-		cleanup()
-		return gateway.SandboxRuntimeInfo{}, err
-	}
-
-	envdURL := appleEnvdURL(strconv.Itoa(hostPort))
-	if err := r.healthCheck(ctx, envdURL); err != nil {
-		cleanup()
-		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("envd health check: %w", err)
-	}
-
-	r.logger.Printf("applecontainer sandbox started sandbox_id=%s container_id=%s envd_url=%s", req.SandboxID, containerID, envdURL)
-
-	return gateway.SandboxRuntimeInfo{
-		SandboxID:     req.SandboxID,
-		EnvdURL:       envdURL,
-		ContainerID:   containerID,
-		ContainerName: containerID,
-		HostPort:      strconv.Itoa(hostPort),
-		MachineID:     containerID,
-		VolumeMounts:  volumeMounts,
-	}, nil
+	return gateway.SandboxRuntimeInfo{}, lastErr
 }
 
 func (r *AppleContainerRuntime) ListTemplates(ctx context.Context) ([]gateway.SandboxRuntimeTemplate, error) {
@@ -350,10 +381,16 @@ func (r *AppleContainerRuntime) ResumeSandbox(ctx context.Context, info gateway.
 
 	template := r.templateForSnapshot(snapshot)
 	envVars := stringMapFromLabel(snapshot.Configuration.Labels[appleLocalSandboxEnvVarsLabel])
+	releaseOperationLock, err := acquireAppleContainerOperationLock(ctx)
+	if err != nil {
+		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("acquire apple container operation lock: %w", err)
+	}
+	defer releaseOperationLock()
+
 	if err := r.client.ContainerBootstrap(ctx, containerID); err != nil {
 		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("bootstrap apple container %s: %w", containerID, err)
 	}
-	if err := r.startEnvd(ctx, containerID, envVars, template.StartCmd); err != nil {
+	if err := r.startEnvd(ctx, containerID, envVars, template); err != nil {
 		return gateway.SandboxRuntimeInfo{}, err
 	}
 
@@ -455,21 +492,48 @@ func (r *AppleContainerRuntime) InspectSandbox(ctx context.Context, info gateway
 		return gateway.SandboxRuntimeInspection{Info: info, Exists: false}, nil
 	}
 
-	snapshots, err := r.client.ContainerList(ctx, ContainerListFilters{IDs: []string{containerID}})
+	snapshot, exists, err := r.inspectContainerSnapshot(ctx, containerID)
 	if err != nil {
 		return gateway.SandboxRuntimeInspection{}, err
 	}
-	if len(snapshots) == 0 {
+	if !exists {
 		return gateway.SandboxRuntimeInspection{Info: info, Exists: false}, nil
 	}
 
-	snapshot := snapshots[0]
 	info = r.runtimeInfoFromSnapshot(snapshot, info)
 	return gateway.SandboxRuntimeInspection{
 		Info:   info,
 		State:  e2bStateFromAppleStatus(snapshot.Status),
 		Exists: true,
 	}, nil
+}
+
+func (r *AppleContainerRuntime) inspectContainerSnapshot(ctx context.Context, containerID string) (ContainerSnapshot, bool, error) {
+	for attempt := 1; attempt <= appleContainerInspectRetryAttempts; attempt++ {
+		snapshots, err := r.client.ContainerList(ctx, ContainerListFilters{IDs: []string{containerID}})
+		if err != nil {
+			return ContainerSnapshot{}, false, err
+		}
+		if len(snapshots) > 0 {
+			return snapshots[0], true, nil
+		}
+		if attempt == appleContainerInspectRetryAttempts {
+			break
+		}
+		timer := time.NewTimer(appleContainerInspectRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ContainerSnapshot{}, false, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return ContainerSnapshot{}, false, nil
 }
 
 func (r *AppleContainerRuntime) RestoreSandboxes(ctx context.Context) ([]gateway.SandboxRecord, error) {
@@ -585,17 +649,25 @@ func dnsConfiguration(allowInternet *bool) *DNSConfiguration {
 	}
 }
 
-func (r *AppleContainerRuntime) startEnvd(ctx context.Context, containerID string, envVars map[string]string, startCmd string) error {
-	if err := r.client.ContainerStartProcess(ctx, containerID, containerID); err != nil {
+func (r *AppleContainerRuntime) startEnvd(ctx context.Context, containerID string, envVars map[string]string, template AppleContainerTemplateConfig) error {
+	if err := r.withAppleTransientNotFoundRetry(ctx, "start init process", func(ctx context.Context) error {
+		return r.client.ContainerStartProcess(ctx, containerID, containerID)
+	}); err != nil {
 		return fmt.Errorf("start apple container init process: %w", err)
 	}
-	if err := r.client.ContainerCopyIn(ctx, containerID, r.cfg.EnvdBinary, appleEnvdPath, 0o755); err != nil {
-		return fmt.Errorf("copy envd binary: %w", err)
+	executable := strings.TrimSpace(template.PrebakedEnvdPath)
+	if executable == "" {
+		executable = appleEnvdPath
+		if err := r.withAppleTransientNotFoundRetry(ctx, "copy envd binary", func(ctx context.Context) error {
+			return r.client.ContainerCopyIn(ctx, containerID, r.cfg.EnvdBinary, appleEnvdPath, 0o755)
+		}); err != nil {
+			return fmt.Errorf("copy envd binary: %w", err)
+		}
 	}
 
 	config := ProcessConfiguration{
-		Executable:         appleEnvdPath,
-		Arguments:          envdArguments(r.cfg.EnvdPort, startCmd),
+		Executable:         executable,
+		Arguments:          envdArguments(r.cfg.EnvdPort, template.StartCmd),
 		Environment:        processEnvironment(envVars),
 		WorkingDirectory:   "/",
 		Terminal:           false,
@@ -603,13 +675,139 @@ func (r *AppleContainerRuntime) startEnvd(ctx context.Context, containerID strin
 		SupplementalGroups: []uint32{},
 		Rlimits:            []any{},
 	}
-	if err := r.client.ContainerCreateProcess(ctx, containerID, appleEnvdProcessID, config); err != nil {
+	if err := r.withAppleTransientNotFoundRetry(ctx, "create envd process", func(ctx context.Context) error {
+		return r.client.ContainerCreateProcess(ctx, containerID, appleEnvdProcessID, config)
+	}); err != nil {
 		return fmt.Errorf("create envd process: %w", err)
 	}
-	if err := r.client.ContainerStartProcess(ctx, containerID, appleEnvdProcessID); err != nil {
+	if err := r.withAppleTransientNotFoundRetry(ctx, "start envd process", func(ctx context.Context) error {
+		return r.client.ContainerStartProcess(ctx, containerID, appleEnvdProcessID)
+	}); err != nil {
 		return fmt.Errorf("start envd process: %w", err)
 	}
 	return nil
+}
+
+func (r *AppleContainerRuntime) withAppleTransientNotFoundRetry(ctx context.Context, operation string, execute func(context.Context) error) error {
+	var lastErr error
+	delay := appleTransientNotFoundInitialDelay
+	for attempt := 1; attempt <= appleTransientNotFoundRetryAttempts; attempt++ {
+		if err := execute(ctx); err != nil {
+			if !isAppleNotFound(err) {
+				return err
+			}
+			lastErr = err
+		} else {
+			if attempt > 1 {
+				r.logger.Printf("applecontainer recovered after transient not_found operation=%s attempts=%d", operation, attempt)
+			}
+			return nil
+		}
+
+		if attempt == appleTransientNotFoundRetryAttempts {
+			break
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+
+		delay *= 2
+		if delay > appleTransientNotFoundMaxDelay {
+			delay = appleTransientNotFoundMaxDelay
+		}
+	}
+	return lastErr
+}
+
+func acquireAppleContainerOperationLock(ctx context.Context) (func(), error) {
+	lockPath := filepath.Join(os.TempDir(), "e2b-applecontainer-operation.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err = unix.Flock(int(lockFile.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() {
+				_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+				_ = lockFile.Close()
+			}, nil
+		}
+		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
+			_ = lockFile.Close()
+			return nil, err
+		}
+
+		timer := time.NewTimer(appleContainerOperationLockPoll)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			_ = lockFile.Close()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *AppleContainerRuntime) nextEnvdHostPort() (int, error) {
+	find := r.findFreePort
+	if find == nil {
+		find = findFreePort
+	}
+	hostPort, err := find()
+	if err != nil {
+		return 0, err
+	}
+	if hostPort <= 0 || hostPort > 65535 {
+		return 0, fmt.Errorf("invalid envd host port %d", hostPort)
+	}
+	return hostPort, nil
+}
+
+func (r *AppleContainerRuntime) cleanupContainer(containerID string) {
+	if err := r.client.ContainerDelete(context.Background(), containerID, true); err != nil {
+		if isAppleNotFound(err) {
+			return
+		}
+		r.logger.Printf("applecontainer cleanup failed container_id=%s error=%v", containerID, err)
+	}
+}
+
+func isPortAllocationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	portConflictSignals := []string{
+		"address already in use",
+		"bind: address",
+		"host port",
+		"port already allocated",
+		"port is already allocated",
+		"port is already in use",
+		"port is unavailable",
+	}
+	for _, signal := range portConflictSignals {
+		if strings.Contains(message, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func envdArguments(port int, startCmd string) []string {

@@ -456,7 +456,7 @@ func (c *XPCClient) defaultKernelData(ctx context.Context) ([]byte, error) {
 	setData(msg, keySystemPlatform, platformData)
 	reply, err := c.sendAPI(ctx, msg, xpcTimeoutDefault)
 	if err != nil {
-		return nil, fmt.Errorf("get default apple container kernel: %w", err)
+		return nil, fmt.Errorf("get default apple container kernel; run 'container system kernel set --recommended' if no default kernel is configured: %w", err)
 	}
 	defer C.xpc_bridge_msg_release(reply)
 
