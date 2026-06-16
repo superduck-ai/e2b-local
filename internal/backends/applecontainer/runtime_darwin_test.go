@@ -834,6 +834,25 @@ func TestAppleDateAcceptsNull(t *testing.T) {
 	}
 }
 
+func TestAppleDateZeroValueMarshalsAsNull(t *testing.T) {
+	var date AppleDate
+	data, err := json.Marshal(date)
+	if err != nil {
+		t.Fatalf("marshal zero AppleDate: %v", err)
+	}
+	if string(data) != "null" {
+		t.Fatalf("expected zero AppleDate to marshal as null, got %s", data)
+	}
+
+	var decoded AppleDate
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal zero AppleDate: %v", err)
+	}
+	if !time.Time(decoded).IsZero() {
+		t.Fatalf("expected zero AppleDate round-trip, got %s", time.Time(decoded))
+	}
+}
+
 func newTestAppleRuntime(envdPath string, client *fakeAppleClient) *AppleContainerRuntime {
 	return &AppleContainerRuntime{
 		cfg: AppleContainerRuntimeConfig{

@@ -25,7 +25,7 @@ func (d *AppleDate) UnmarshalJSON(data []byte) error {
 func (d AppleDate) MarshalJSON() ([]byte, error) {
 	t := time.Time(d).UTC()
 	if t.IsZero() {
-		return []byte("0"), nil
+		return []byte("null"), nil
 	}
 	seconds := float64(t.Unix()-978307200) + float64(t.Nanosecond())/1e9
 	return []byte(strconv.FormatFloat(seconds, 'f', -1, 64)), nil
