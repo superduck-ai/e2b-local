@@ -4,6 +4,8 @@ package sdk_integration_test
 
 import (
 	"context"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	_ "e2b-local/internal/backends/applecontainer"
 	_ "e2b-local/internal/backends/docker"
 	_ "e2b-local/internal/backends/orbstack"
 	gateway "e2b-local/internal/gateway"
@@ -25,6 +28,7 @@ const testAPIKey = "e2b_0000000000000000000000000000000000000000"
 const defaultOrbstackTestBaseMachine = "ubuntu-2404"
 const dockerEnvdBinaryAMD64 = "envd-bin/envd-linux-amd64"
 const dockerEnvdBinaryARM64 = "envd-bin/envd-linux-arm64"
+const appleContainerSDKTimeout = 4 * time.Minute
 
 func goSDKIntegrationConfig(t *testing.T) gateway.Config {
 	t.Helper()
@@ -45,6 +49,9 @@ func skipUnlessGoSDKRuntimeAvailable(t *testing.T, cfg gateway.Config) {
 		return
 	case "orbstack":
 		skipUnlessOrbstackRuntimeAvailable(t, cfg)
+		return
+	case "applecontainer":
+		skipUnlessAppleContainerRuntimeAvailable(t, cfg)
 		return
 	}
 }
@@ -99,6 +106,42 @@ func skipUnlessOrbstackRuntimeAvailable(t *testing.T, cfg gateway.Config) {
 	}
 }
 
+func skipUnlessAppleContainerRuntimeAvailable(t *testing.T, cfg gateway.Config) {
+	t.Helper()
+
+	if runtime.GOOS != "darwin" {
+		t.Skipf("applecontainer runtime is only available on darwin, got %s", runtime.GOOS)
+	}
+	info, err := os.Stat(cfg.AppleContainer.EnvdBinary)
+	if err != nil {
+		t.Skipf("envd binary is unavailable: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Skipf("envd binary is not executable: %s", cfg.AppleContainer.EnvdBinary)
+	}
+	if appleContainerConfiguredTemplateID(cfg) == "" {
+		t.Skip("applecontainer.templates has no configured templates")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	runtime, err := gateway.NewSandboxRuntime(cfg, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Skipf("applecontainer runtime is unavailable: %v", err)
+	}
+	if closer, ok := runtime.(interface{ Close() }); ok {
+		t.Cleanup(closer.Close)
+	}
+	restorer, ok := runtime.(gateway.SandboxRuntimeRestorer)
+	if !ok {
+		return
+	}
+	if _, err := restorer.RestoreSandboxes(ctx); err != nil {
+		t.Skipf("apple container apiserver is unavailable: %v", err)
+	}
+}
+
 func goSDKTemplateID(t *testing.T, cfg gateway.Config) string {
 	t.Helper()
 
@@ -114,7 +157,19 @@ func goSDKTemplateID(t *testing.T, cfg gateway.Config) string {
 		}
 		return orbstackTestBaseMachine()
 	}
+	if cfg.Runtime.Type == "applecontainer" {
+		if templateID := appleContainerConfiguredTemplateID(cfg); templateID != "" {
+			return templateID
+		}
+	}
 	return "base"
+}
+
+func goSDKOperationTimeout(cfg gateway.Config, fallback time.Duration) time.Duration {
+	if cfg.Runtime.Type == "applecontainer" && fallback < appleContainerSDKTimeout {
+		return appleContainerSDKTimeout
+	}
+	return fallback
 }
 
 func dockerIntegrationImageRef(t *testing.T, cfg gateway.Config) string {
@@ -252,6 +307,21 @@ func orbstackConfiguredTemplateID(cfg gateway.Config) string {
 			continue
 		}
 		templateIDs = append(templateIDs, templateID)
+	}
+	sort.Strings(templateIDs)
+	if len(templateIDs) == 0 {
+		return ""
+	}
+	return templateIDs[0]
+}
+
+func appleContainerConfiguredTemplateID(cfg gateway.Config) string {
+	templateIDs := make([]string, 0, len(cfg.AppleContainer.Templates))
+	for templateID := range cfg.AppleContainer.Templates {
+		templateID = strings.TrimSpace(templateID)
+		if templateID != "" {
+			templateIDs = append(templateIDs, templateID)
+		}
 	}
 	sort.Strings(templateIDs)
 	if len(templateIDs) == 0 {

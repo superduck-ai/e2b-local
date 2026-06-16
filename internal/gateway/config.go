@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -14,25 +15,32 @@ const (
 	defaultServerAddr  = "127.0.0.1:3000"
 	defaultEnvdVersion = "99.99.99"
 
-	defaultRuntimeType                = "docker"
-	defaultDockerContainerNamePrefix  = "e2b-envd-"
-	defaultDockerHealthTimeoutSeconds = 30
-	defaultOrbstackMachineNamePrefix  = "e2b-sandbox-"
-	defaultOrbstackDefaultMemory      = "2G"
-	defaultOrbstackDefaultCPUs        = "2"
-	defaultOrbstackDefaultDisk        = "16G"
-	defaultOrbstackEnvdBinary         = "envd-bin/envd-linux-arm64"
-	defaultOrbstackEnvdPort           = 49983
-	defaultOrbstackHealthTimeout      = 60
-	defaultTemplateBuildMaxConcurrent = 2
+	defaultRuntimeType                 = "docker"
+	defaultDockerContainerNamePrefix   = "e2b-envd-"
+	defaultDockerHealthTimeoutSeconds  = 30
+	defaultOrbstackMachineNamePrefix   = "e2b-sandbox-"
+	defaultOrbstackDefaultMemory       = "2G"
+	defaultOrbstackDefaultCPUs         = "2"
+	defaultOrbstackDefaultDisk         = "16G"
+	defaultOrbstackEnvdBinary          = "envd-bin/envd-linux-arm64"
+	defaultOrbstackEnvdPort            = 49983
+	defaultOrbstackHealthTimeout       = 60
+	defaultAppleContainerNamePrefix    = "e2b-sandbox-"
+	defaultAppleContainerEnvdBinary    = "envd-bin/envd-linux-arm64"
+	defaultAppleContainerEnvdPort      = 49983
+	defaultAppleContainerHealthTimeout = 60
+	defaultAppleContainerCPUs          = 4
+	defaultAppleContainerMemoryMB      = 1024
+	defaultTemplateBuildMaxConcurrent  = 2
 )
 
 type Config struct {
-	Server         ServerConfig          `yaml:"server"`
-	Runtime        RuntimeConfig         `yaml:"runtime"`
-	Docker         DockerRuntimeConfig   `yaml:"docker"`
-	Orbstack       OrbstackRuntimeConfig `yaml:"orbstack"`
-	TemplateBuilds TemplateBuildConfig   `yaml:"template_builds"`
+	Server         ServerConfig                `yaml:"server"`
+	Runtime        RuntimeConfig               `yaml:"runtime"`
+	Docker         DockerRuntimeConfig         `yaml:"docker"`
+	Orbstack       OrbstackRuntimeConfig       `yaml:"orbstack"`
+	AppleContainer AppleContainerRuntimeConfig `yaml:"applecontainer"`
+	TemplateBuilds TemplateBuildConfig         `yaml:"template_builds"`
 }
 
 type ServerConfig struct {
@@ -76,6 +84,24 @@ type OrbstackTemplateConfig struct {
 	BaseMachine string `yaml:"base_machine"`
 }
 
+type AppleContainerRuntimeConfig struct {
+	ContainerNamePrefix  string                                  `yaml:"container_name_prefix"`
+	EnvdBinary           string                                  `yaml:"envd_binary"`
+	EnvdPort             int                                     `yaml:"envd_port"`
+	HealthTimeoutSeconds int                                     `yaml:"health_timeout_seconds"`
+	DefaultCPUs          int                                     `yaml:"default_cpus"`
+	DefaultMemoryMB      int                                     `yaml:"default_memory_mb"`
+	Templates            map[string]AppleContainerTemplateConfig `yaml:"templates"`
+}
+
+type AppleContainerTemplateConfig struct {
+	Image            string `yaml:"image"`
+	CPUs             int    `yaml:"cpus"`
+	MemoryMB         int    `yaml:"memory_mb"`
+	StartCmd         string `yaml:"start_cmd"`
+	PrebakedEnvdPath string `yaml:"prebaked_envd_path"`
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Server: ServerConfig{
@@ -98,6 +124,14 @@ func DefaultConfig() Config {
 			EnvdPort:             defaultOrbstackEnvdPort,
 			HealthTimeoutSeconds: defaultOrbstackHealthTimeout,
 			VolumeHostPath:       defaultVolumeHostPath(),
+		},
+		AppleContainer: AppleContainerRuntimeConfig{
+			ContainerNamePrefix:  defaultAppleContainerNamePrefix,
+			EnvdBinary:           defaultBundledPath(defaultAppleContainerEnvdBinary),
+			EnvdPort:             defaultAppleContainerEnvdPort,
+			HealthTimeoutSeconds: defaultAppleContainerHealthTimeout,
+			DefaultCPUs:          defaultAppleContainerCPUs,
+			DefaultMemoryMB:      defaultAppleContainerMemoryMB,
 		},
 		TemplateBuilds: TemplateBuildConfig{
 			MaxConcurrent: defaultTemplateBuildMaxConcurrent,
@@ -195,6 +229,7 @@ func (c *Config) ResolveLocalPaths(baseDir string) {
 	c.Docker.EnvdBinary = resolveLocalPath(baseDir, c.Docker.EnvdBinary)
 	c.Orbstack.EnvdBinary = resolveLocalPath(baseDir, c.Orbstack.EnvdBinary)
 	c.Orbstack.VolumeHostPath = resolveLocalPath(baseDir, c.Orbstack.VolumeHostPath)
+	c.AppleContainer.EnvdBinary = resolveLocalPath(baseDir, c.AppleContainer.EnvdBinary)
 }
 
 func resolveLocalPath(baseDir string, value string) string {
@@ -248,8 +283,9 @@ func (c Config) Validate() error {
 	switch c.Runtime.Type {
 	case "docker":
 	case "orbstack":
+	case "applecontainer":
 	default:
-		return fmt.Errorf("runtime.type must be docker or orbstack")
+		return fmt.Errorf("runtime.type must be docker, orbstack, or applecontainer")
 	}
 
 	if c.Runtime.Type == "docker" {
@@ -260,6 +296,11 @@ func (c Config) Validate() error {
 
 	if c.Runtime.Type == "orbstack" {
 		if err := c.Orbstack.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Runtime.Type == "applecontainer" {
+		if err := c.AppleContainer.Validate(); err != nil {
 			return err
 		}
 	}
@@ -329,6 +370,56 @@ func (c OrbstackRuntimeConfig) Validate() error {
 		if value := strings.TrimSpace(template.BaseMachine); value != "" && strings.ContainsRune(value, '\n') {
 			return fmt.Errorf("orbstack.templates.%s.base_machine must be a single machine name", templateID)
 		}
+	}
+	return nil
+}
+
+func (c AppleContainerRuntimeConfig) Validate() error {
+	if strings.TrimSpace(c.ContainerNamePrefix) == "" {
+		return fmt.Errorf("applecontainer.container_name_prefix is required")
+	}
+	if strings.TrimSpace(c.EnvdBinary) != "" && !filepath.IsAbs(c.EnvdBinary) {
+		return fmt.Errorf("applecontainer.envd_binary must be an absolute path")
+	}
+	if c.EnvdPort <= 0 || c.EnvdPort > 65535 {
+		return fmt.Errorf("applecontainer.envd_port must be between 1 and 65535")
+	}
+	if c.HealthTimeoutSeconds <= 0 {
+		return fmt.Errorf("applecontainer.health_timeout_seconds must be positive")
+	}
+	if c.DefaultCPUs <= 0 {
+		return fmt.Errorf("applecontainer.default_cpus must be positive")
+	}
+	if c.DefaultMemoryMB <= 0 {
+		return fmt.Errorf("applecontainer.default_memory_mb must be positive")
+	}
+	if len(c.Templates) == 0 {
+		return fmt.Errorf("applecontainer.templates is required")
+	}
+	requiresHostEnvdBinary := false
+	for templateID, template := range c.Templates {
+		if strings.TrimSpace(templateID) == "" {
+			return fmt.Errorf("applecontainer.templates keys must not be empty")
+		}
+		if strings.TrimSpace(template.Image) == "" {
+			return fmt.Errorf("applecontainer.templates.%s.image is required", templateID)
+		}
+		if template.CPUs < 0 {
+			return fmt.Errorf("applecontainer.templates.%s.cpus must not be negative", templateID)
+		}
+		if template.MemoryMB < 0 {
+			return fmt.Errorf("applecontainer.templates.%s.memory_mb must not be negative", templateID)
+		}
+		if prebakedEnvdPath := strings.TrimSpace(template.PrebakedEnvdPath); prebakedEnvdPath != "" {
+			if !path.IsAbs(prebakedEnvdPath) {
+				return fmt.Errorf("applecontainer.templates.%s.prebaked_envd_path must be absolute", templateID)
+			}
+		} else {
+			requiresHostEnvdBinary = true
+		}
+	}
+	if requiresHostEnvdBinary && strings.TrimSpace(c.EnvdBinary) == "" {
+		return fmt.Errorf("applecontainer.envd_binary is required unless every template sets prebaked_envd_path")
 	}
 	return nil
 }

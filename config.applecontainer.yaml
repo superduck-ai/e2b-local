@@ -1,0 +1,22 @@
+server:
+  addr: "127.0.0.1:3000"
+
+runtime:
+  type: "applecontainer"
+
+applecontainer:
+  container_name_prefix: "e2b-sandbox-"
+  envd_binary: "envd-bin/envd-linux-arm64"
+  envd_port: 49983
+  health_timeout_seconds: 60
+  default_cpus: 4
+  default_memory_mb: 1024
+  # Optional when every template sets prebaked_envd_path.
+  # envd_binary is copied into each sandbox unless the selected template is prebaked.
+  templates:
+    debian-bookworm-slim:
+      image: "docker.io/library/debian:bookworm-slim"
+      cpus: 4
+      memory_mb: 2048
+      # Optional: executable path inside the image when envd is already baked in.
+      # prebaked_envd_path: "/usr/local/bin/envd"

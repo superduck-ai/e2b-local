@@ -26,7 +26,7 @@ func TestJSSDKGatewaySmoke(t *testing.T) {
 	server := httptest.NewServer(gateway.NewApp(cfg, log.New(io.Discard, "", 0)))
 	t.Cleanup(server.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), goSDKOperationTimeout(cfg, 90*time.Second))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "node", "scripts/js-sdk-smoke.mjs")

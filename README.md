@@ -6,8 +6,9 @@
 
 - Docker containers through the Docker Engine API
 - OrbStack Linux VMs through the OrbStack CLI
+- Apple Container through its native XPC services on macOS
 
-The HTTP layer follows the E2B OpenAPI schema where practical, while runtime-specific work lives behind Docker and OrbStack backend packages.
+The HTTP layer follows the E2B OpenAPI schema where practical, while runtime-specific work lives behind Docker, OrbStack, and Apple Container backend packages.
 
 ## Quick Start
 
@@ -52,6 +53,7 @@ flowchart LR
   subgraph RuntimeBackends["Runtime backends"]
     Registry --> Docker["Docker runtime<br/>internal/backends/docker"]
     Registry --> OrbStack["OrbStack runtime<br/>internal/backends/orbstack"]
+    Registry --> AppleContainer["Apple Container runtime<br/>internal/backends/applecontainer"]
   end
 
   subgraph DockerRuntime["Docker"]
@@ -64,8 +66,14 @@ flowchart LR
     OrbStack --> HostVolumes["Host volume directories<br/>orbstack.volume_host_path"]
   end
 
+  subgraph AppleRuntime["Apple Container"]
+    AppleContainer --> AppleContainers["VM-backed containers<br/>through container-apiserver XPC"]
+    AppleContainer --> AppleVolumes["Apple Container named volumes"]
+  end
+
   EnvdBin["envd-bin<br/>linux amd64 / arm64"] --> Docker
   EnvdBin --> OrbStack
+  EnvdBin --> AppleContainer
   Containers --> ContainerEnvd["envd inside container"]
   VMs --> VMEnvd["envd systemd service"]
   ContainerEnvd -. "direct envdURL" .-> SDK
@@ -90,6 +98,7 @@ Template IDs are local runtime IDs:
 
 - Docker runtime exposes tagged local Docker images as templates. For example, `e2b-local/code-interpreter:latest` is available as `code-interpreter`.
 - OrbStack runtime exposes existing OrbStack machines, or configured template IDs, as templates.
+- Apple Container runtime exposes configured template IDs mapped to locally pulled OCI images.
 - Call `ListTemplates` from the SDK, or `GET /templates`, to see the exact IDs available on the current machine.
 
 JavaScript or TypeScript callers:
@@ -166,6 +175,7 @@ Runtime notes for callers:
 
 - Docker volumes are Docker native named volumes. The returned `volumeID` is the Docker volume name.
 - OrbStack volumes are directories under `orbstack.volume_host_path` and are mounted into sandbox VMs on demand.
+- Apple Container volumes are Apple Container native named volumes and are mounted during sandbox creation.
 - The SDK receives a direct `envdURL` for each sandbox, so commands, filesystem, PTY, and streaming calls talk directly to the sandbox runtime after creation.
 
 ## Status
@@ -179,6 +189,7 @@ Implemented capabilities include:
 - Template, build, volume, snapshot, and metrics resource endpoints.
 - Docker runtime for creating, pausing, resuming, deleting, restoring, logging, and collecting stats from real containers.
 - OrbStack runtime for cloning/starting/stopping/deleting VMs through OrbStack sockets, installing `envd` as a systemd service, managing volume mounts, and creating snapshots without shelling out to the OrbStack CLI.
+- Apple Container runtime for creating, pausing, resuming, deleting, restoring, and mounting volumes through `container-apiserver` XPC without shelling out for sandbox lifecycle operations.
 
 ## Repository Layout
 
@@ -186,8 +197,9 @@ Implemented capabilities include:
 - `internal/gateway`: core gateway package with config, routes, store, callbacks, and runtime interfaces.
 - `internal/backends/docker`: Docker runtime implementation.
 - `internal/backends/orbstack`: OrbStack VM runtime implementation.
+- `internal/backends/applecontainer`: Apple Container XPC runtime implementation.
 - `internal/e2bapi`: generated OpenAPI client/server/DTO code.
-- `envd-bin`: checked-in Linux `envd` binaries used by Docker and OrbStack.
+- `envd-bin`: checked-in Linux `envd` binaries used by Docker, OrbStack, and Apple Container.
 - `scripts`: local smoke-test and helper scripts.
 - `tests/sdk_integration`: optional Go/JS SDK integration tests.
 
@@ -196,7 +208,7 @@ Backends register themselves through `RegisterSandboxRuntimeFactory`, so runtime
 ## Requirements
 
 - Go 1.24 or newer.
-- Docker or OrbStack, depending on the selected runtime.
+- Docker, OrbStack, or Apple Container, depending on the selected runtime.
 - A compatible Linux `envd` binary from `envd-bin`.
 
 The repository tracks:
@@ -204,11 +216,11 @@ The repository tracks:
 - `envd-bin/envd-linux-amd64`
 - `envd-bin/envd-linux-arm64`
 
-Docker inspects the selected image architecture and bind-mounts the matching `envd` binary into each sandbox container at `/usr/local/bin/envd`. OrbStack copies the configured binary into each sandbox VM and installs it as `/usr/local/bin/envd` before starting the systemd service.
+Docker inspects the selected image architecture and bind-mounts the matching `envd` binary into each sandbox container at `/usr/local/bin/envd`. OrbStack copies the configured binary into each sandbox VM and installs it as `/usr/local/bin/envd` before starting the systemd service. Apple Container copies the configured binary into each VM-backed container with XPC `copyIn` unless the selected template sets `prebaked_envd_path`, then starts envd as a container process.
 
 ## Configuration
 
-See `config.example.yaml` for the full local config shape. Use `config.docker.yaml` for a Docker-focused example and `config.orb.yaml` for an OrbStack-focused example.
+See `config.example.yaml` for the full local config shape. Use `config.docker.yaml` for a Docker-focused example, `config.orb.yaml` for an OrbStack-focused example, and `config.applecontainer.yaml` for an Apple Container example.
 
 A compact Docker config:
 
@@ -226,13 +238,15 @@ docker:
 
 Important fields:
 
-- `runtime.type` supports `docker` and `orbstack`.
+- `runtime.type` supports `docker`, `orbstack`, and `applecontainer`.
 - `docker.host` can be omitted. The gateway uses `DOCKER_HOST`, then the current user's OrbStack socket when present, then `unix:///var/run/docker.sock`.
 - Docker templates are discovered from tagged local Docker images. The gateway never pulls images; pull, build, and tag them locally before creating sandboxes.
 - `docker.platform` is optional. Empty means Docker chooses the image platform, then the gateway inspects the selected image.
 - `docker.envd_binary` is optional. Empty means the gateway picks `envd-bin/envd-linux-amd64` or `envd-bin/envd-linux-arm64` from the selected image architecture. When set, it can be relative to the config file.
 - `orbstack.envd_binary` can be relative to the config file. The gateway copies it into each VM before installing the service.
 - `orbstack.volume_host_path` stores local volume directories on macOS and supports `~` and config-relative paths.
+- `applecontainer.envd_binary` can be relative to the config file. The gateway copies it into Apple Container sandboxes unless the selected template sets `prebaked_envd_path`.
+- `applecontainer.templates` maps local template IDs to Apple Container image references. The gateway does not pull images; pull them with `container image pull` first.
 
 ## Docker envd Helper
 
@@ -319,6 +333,58 @@ In OrbStack runtime:
 - Volumes are exposed through OrbStack selective mounts and symlinked to the requested paths inside the VM.
 - Snapshots are created by cloning the VM through OrbStack's socket RPC.
 
+## Apple Container Runtime
+
+Use Apple Container runtime on Apple Silicon macOS when each sandbox should run as an Apple Container VM-backed container:
+
+```yaml
+runtime:
+  type: "applecontainer"
+
+applecontainer:
+  container_name_prefix: "e2b-sandbox-"
+  envd_binary: "envd-bin/envd-linux-arm64"
+  envd_port: 49983
+  templates:
+    debian-bookworm-slim:
+      image: "docker.io/library/debian:bookworm-slim"
+      # Set this when envd is already baked into the image.
+      # prebaked_envd_path: "/usr/local/bin/envd"
+```
+
+System prerequisites:
+
+```bash
+export CGO_ENABLED=1
+brew install container
+brew services start container
+container system status
+container system kernel set --recommended
+container image pull --platform linux/arm64 docker.io/library/debian:bookworm-slim
+```
+
+Notes:
+
+- The Apple Container backend requires macOS with cgo enabled because the native XPC bridge is compiled through cgo.
+- Apple Container must report `status running`; the backend talks to `com.apple.container.apiserver` and `com.apple.container.core.container-core-images` directly through XPC.
+- A default kernel is required. If `container run` reports `default kernel not configured`, run `container system kernel set --recommended`.
+- Template images must already be pulled with Apple Container. Lifecycle-only smoke tests can use small images such as Alpine, but E2B SDK command execution needs an image with `/bin/bash`; `debian:bookworm-slim` works.
+- envd is copied from `applecontainer.envd_binary` unless the selected template sets `prebaked_envd_path`.
+- envd is exposed with an explicit published localhost port because Apple Container does not allocate `hostPort: 0`; the runtime retries with a fresh port when Apple Container reports a port conflict.
+- `pause` maps to Apple Container stop, and `resume` bootstraps the existing container and reuses the persisted published port.
+- Volumes use Apple Container named volumes and are mounted with the requested `VolumeMounts` during sandbox creation.
+
+Capability matrix:
+
+| Capability | Apple Container backend |
+| ---------- | ----------------------- |
+| Create/pause/resume/delete/restore | Supported |
+| Commands, filesystem, PTY, Git | Supported through direct `envdURL` |
+| Volume create/list/get/delete | Supported with Apple Container named volumes |
+| Volume mounts | Supported at sandbox creation |
+| Snapshots | Not supported |
+| Runtime network updates | Not supported |
+
 ## Tests
 
 Run regular tests:
@@ -339,4 +405,11 @@ Optional Go SDK integration tests:
 go test -tags=go_sdk_integration -run 'TestGoSDKGatewayMVP|TestGoSDKGatewayFilesystemDirectEnvd|TestGoSDKGatewayVolumeLifecycle' -count=1 -v
 ```
 
-The SDK integration tests read `config.yaml` through `LoadConfig("config.yaml")` and skip when Docker, envd, Node, or SDK dependencies are unavailable.
+Optional Apple Container integration tests:
+
+```bash
+go test -tags=integration ./internal/backends/applecontainer/... -count=1 -v
+go test -tags=go_sdk_integration ./tests/sdk_integration -run TestGoSDKGatewayAppleContainerDirectEnvd -count=1 -v
+```
+
+Most SDK integration tests read `config.yaml` through `LoadConfig("config.yaml")` and skip when Docker, envd, Node, or SDK dependencies are unavailable. `TestGoSDKGatewayAppleContainerDirectEnvd` builds its own Apple Container config and skips unless `container-apiserver`, the configured envd binary, and the template image are available.

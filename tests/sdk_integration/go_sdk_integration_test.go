@@ -37,7 +37,7 @@ func TestGoSDKGatewayFilesystemDirectEnvd(t *testing.T) {
 	t.Setenv("E2B_API_KEY", testAPIKey)
 	t.Setenv("E2B_DEBUG", "false")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), goSDKOperationTimeout(cfg, 60*time.Second))
 	defer cancel()
 
 	sandbox, err := e2b.Create(ctx, goSDKTemplateID(t, cfg), nil)
@@ -98,7 +98,7 @@ func runGoSDKSandboxLifecycle(t *testing.T, cfg gateway.Config, marker string) {
 	t.Setenv("E2B_DEBUG", "false")
 	t.Setenv("E2B_SANDBOX_URL", "")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), goSDKOperationTimeout(cfg, 45*time.Second))
 	defer cancel()
 
 	templateID := goSDKTemplateID(t, cfg)
