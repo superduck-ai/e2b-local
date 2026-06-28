@@ -51,6 +51,9 @@ jobs:
           path: .duckpr/pullfrog-private
           persist-credentials: false
 
+      - name: Hide private Pullfrog checkout from git status
+        run: echo ".duckpr/" >> .git/info/exclude
+
       - name: Run private Pullfrog review
         uses: ./.duckpr/pullfrog-private
         with:
