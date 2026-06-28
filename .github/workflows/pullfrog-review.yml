@@ -64,3 +64,4 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
           PULLFROG_MODEL: ${{ inputs.model }}
+          PULLFROG_AGENT: claude
