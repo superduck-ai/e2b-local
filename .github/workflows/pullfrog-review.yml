@@ -67,3 +67,4 @@ jobs:
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_AGENT: claude
           PULLFROG_SELF_HOSTED: "1"
+          PULLFROG_FORCE_LOCAL_CLI: "1"
