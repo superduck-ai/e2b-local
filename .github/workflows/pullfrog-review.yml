@@ -250,7 +250,13 @@ jobs:
               const parsed = JSON.parse(data);
               jsonEvents++;
               if (parsed.type) types.push(parsed.type);
-              if (parsed.error || parsed.message || parsed.code) {
+              if (
+                parsed.type === "error" ||
+                parsed.error ||
+                parsed.error_type ||
+                parsed.error_status ||
+                parsed.code
+              ) {
                 errors.push({
                   type: parsed.error?.type ?? parsed.type ?? "",
                   code: parsed.error?.code ?? parsed.code ?? "",
@@ -344,7 +350,13 @@ jobs:
               const parsed = JSON.parse(data);
               jsonEvents++;
               if (parsed.type) types.push(parsed.type);
-              if (parsed.error || parsed.message || parsed.code) {
+              if (
+                parsed.type === "error" ||
+                parsed.error ||
+                parsed.error_type ||
+                parsed.error_status ||
+                parsed.code
+              ) {
                 errors.push({
                   type: parsed.error?.type ?? parsed.type ?? "",
                   code: parsed.error?.code ?? parsed.code ?? "",
@@ -368,6 +380,140 @@ jobs:
           if (dataLines.length === 0) {
             console.log(raw.slice(0, 1200));
           }
+          NODE
+          echo "::endgroup::"
+
+          echo "::group::Anthropic-compatible feature preflights"
+          node <<'NODE'
+          const url = `${process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, "")}/v1/messages`;
+          const headers = {
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+            authorization: `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`,
+          };
+
+          function summarizeBody(name, contentType, raw) {
+            console.log(`${name}_content_type=${contentType}`);
+            console.log(`${name}_raw_length=${raw.length}`);
+
+            const dataLines = raw
+              .split(/\r?\n/)
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trim())
+              .filter(Boolean);
+
+            if (dataLines.length === 0) {
+              try {
+                const parsed = JSON.parse(raw);
+                console.log(`${name}_json_type=${parsed.type ?? ""}`);
+                console.log(`${name}_json_error_type=${parsed.error?.type ?? ""}`);
+                console.log(`${name}_json_error_code=${parsed.error?.code ?? parsed.code ?? ""}`);
+                console.log(`${name}_json_error_message=${parsed.error?.message ?? parsed.message ?? ""}`);
+                console.log(`${name}_json_model=${parsed.model ?? ""}`);
+                console.log(`${name}_json_stop_reason=${parsed.stop_reason ?? ""}`);
+              } catch {
+                console.log(`${name}_body_preview=${raw.slice(0, 1200)}`);
+              }
+              return;
+            }
+
+            let jsonEvents = 0;
+            let doneEvents = 0;
+            let parseErrors = 0;
+            const types = [];
+            const blockTypes = [];
+            const errors = [];
+
+            for (const data of dataLines) {
+              if (data === "[DONE]") {
+                doneEvents++;
+                continue;
+              }
+              try {
+                const parsed = JSON.parse(data);
+                jsonEvents++;
+                if (parsed.type) types.push(parsed.type);
+                if (parsed.content_block?.type) blockTypes.push(parsed.content_block.type);
+                if (
+                  parsed.type === "error" ||
+                  parsed.error ||
+                  parsed.error_type ||
+                  parsed.error_status ||
+                  parsed.code
+                ) {
+                  errors.push({
+                    type: parsed.error?.type ?? parsed.type ?? "",
+                    code: parsed.error?.code ?? parsed.code ?? "",
+                    message: parsed.error?.message ?? parsed.message ?? "",
+                  });
+                }
+              } catch {
+                parseErrors++;
+              }
+            }
+
+            console.log(`${name}_sse_data_lines=${dataLines.length}`);
+            console.log(`${name}_sse_json_events=${jsonEvents}`);
+            console.log(`${name}_sse_done_events=${doneEvents}`);
+            console.log(`${name}_sse_parse_errors=${parseErrors}`);
+            console.log(`${name}_sse_event_types=${[...new Set(types)].slice(0, 12).join(",")}`);
+            console.log(`${name}_sse_block_types=${[...new Set(blockTypes)].slice(0, 12).join(",")}`);
+            console.log(`${name}_sse_error_count=${errors.length}`);
+            if (errors.length > 0) {
+              console.log(`${name}_sse_first_error=${JSON.stringify(errors[0]).slice(0, 800)}`);
+            }
+          }
+
+          async function runCase(name, payload) {
+            const body = JSON.stringify(payload);
+            console.log(`${name}_request_json_bytes=${Buffer.byteLength(body)}`);
+            const startedAt = Date.now();
+            try {
+              const response = await fetch(url, {
+                method: "POST",
+                headers,
+                body,
+                signal: AbortSignal.timeout(180_000),
+              });
+              const raw = await response.text();
+              console.log(`${name}_http_code=${response.status}`);
+              console.log(`${name}_time_total_ms=${Date.now() - startedAt}`);
+              console.log(`${name}_date=${response.headers.get("date") ?? ""}`);
+              console.log(`${name}_retry_after=${response.headers.get("retry-after") ?? ""}`);
+              summarizeBody(name, response.headers.get("content-type") ?? "", raw);
+            } catch (error) {
+              console.log(`${name}_fetch_error=${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+
+          await runCase("tool_stream", {
+            model: process.env.PULLFROG_MODEL,
+            max_tokens: 64,
+            stream: true,
+            tools: [
+              {
+                name: "report_ok",
+                description: "Report a short diagnostic value.",
+                input_schema: {
+                  type: "object",
+                  properties: {
+                    value: { type: "string", description: "The value to report." },
+                  },
+                  required: ["value"],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            messages: [{ role: "user", content: "Use the report_ok tool with value ok." }],
+          });
+
+          await runCase("thinking_stream", {
+            model: process.env.PULLFROG_MODEL,
+            max_tokens: 1200,
+            stream: true,
+            thinking: { type: "enabled", budget_tokens: 1024 },
+            messages: [{ role: "user", content: "Think briefly, then reply with ok." }],
+          });
           NODE
           echo "::endgroup::"
 
