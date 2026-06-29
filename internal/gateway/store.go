@@ -248,6 +248,7 @@ func CopyStringMap(values map[string]string) map[string]string {
 func copySandboxRecord(record SandboxRecord) SandboxRecord {
 	record.Metadata = copyStringMap(record.Metadata)
 	record.RuntimeInfo.VolumeMounts = append([]VolumeMount(nil), record.RuntimeInfo.VolumeMounts...)
+	record.RuntimeInfo.PublishedPorts = append([]SandboxPortMapping(nil), record.RuntimeInfo.PublishedPorts...)
 	return record
 }
 

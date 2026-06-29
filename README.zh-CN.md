@@ -180,13 +180,22 @@ Docker 会 inspect 选中镜像的架构，并把匹配的 `envd` 二进制 bind
 
 ```yaml
 server:
-  addr: "127.0.0.1:3000"
+  addr: "0.0.0.0:3000"
+
+traffic:
+  # 留空时 e2b-local 会在启动时自动探测出口网卡 IP。
+  # advertised_host: "192.168.1.10"
+  # 可选：强制使用宿主机网卡，比如 macOS 上被 VPN/TUN 改写默认路由时使用 en0。
+  # interface: "en0"
+  advertised_probe_addr: "8.8.8.8:80"
 
 runtime:
   type: "docker"
 
 docker:
   container_name_prefix: "e2b-envd-"
+  published_ports: [5000]
+  published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
 ```
 
@@ -195,8 +204,10 @@ docker:
 - `runtime.type` 支持 `docker`、`orbstack` 和 `applecontainer`。
 - `docker.host` 可以省略。gateway 会依次使用 `DOCKER_HOST`、当前用户的 OrbStack socket，以及 `unix:///var/run/docker.sock`。
 - Docker templates 来自本机已有 tag 的 Docker images。gateway 不会自动 pull 镜像；请先在本机 pull、build 并打好 tag 再创建 sandbox。
+- `traffic.advertised_host` 是端口查询接口返回给用户的 IP 或 host。留空时 gateway 会在启动时自动探测。`traffic.interface` 可以强制使用 `en0` 这类宿主机网卡；否则 macOS 回退到 UDP 探测，Linux 会先尝试 netlink 路由表，再回退到 UDP 探测。
 - `docker.platform` 是可选 override。留空时 Docker 自己选择镜像平台，gateway 再 inspect 选中的镜像。
 - `docker.envd_binary` 是可选 override。留空时 gateway 会按选中镜像架构自动选择 `envd-bin/envd-linux-amd64` 或 `envd-bin/envd-linux-arm64`；显式设置时支持相对配置文件路径。
+- `docker.published_ports` 会把 `5000` 这类业务端口发布到每个 sandbox 的动态宿主机端口；`docker.published_host_ip` 默认是 `0.0.0.0`，便于内网访问。
 - `orbstack.envd_binary` 可以写相对路径，gateway 会先解析再复制进 VM。
 - `orbstack.volume_host_path` 存放 macOS 本地 volume 目录，并支持 `~` 和相对配置文件路径。
 - `applecontainer.envd_binary` 可以写相对路径。除非选中 template 设置了 `prebaked_envd_path`，gateway 会先解析再复制进 Apple Container sandbox。
@@ -246,6 +257,7 @@ Docker runtime 下：
 - 自动选择或显式配置的 envd binary 会挂载为容器内 `/usr/local/bin/envd`。
 - 请求里的 E2B volume 使用 Docker 原生 named volume。
 - Sandbox response 会返回 Docker runtime 分配的直连 `envdURL`。
+- 通过 `docker.published_ports` 或 Dockerfile `EXPOSE` 声明的业务端口，可以用 `GET /sandboxes/{sandboxID}/ports/{port}` 查询；响应里包含 `url` 和 `wsUrl`，例如 `http://192.168.1.10:38123`。
 
 示例 sandbox request：
 

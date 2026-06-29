@@ -160,6 +160,75 @@ func TestSandboxLifecycleCallsRuntime(t *testing.T) {
 	}
 }
 
+func TestGetSandboxPortReturnsAdvertisedHostURL(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Traffic.AdvertisedHost = "192.0.2.10"
+	runtime := &recordingRuntime{
+		createRuntimeInfo: SandboxRuntimeInfo{
+			EnvdURL:       "http://127.0.0.1:50000",
+			ContainerID:   "ctr-test",
+			ContainerName: "e2b-envd-test",
+			HostPort:      "50000",
+			PublishedPorts: []SandboxPortMapping{{
+				ContainerPort: 5000,
+				HostIP:        "0.0.0.0",
+				HostPort:      38123,
+				Protocol:      "tcp",
+			}},
+		},
+	}
+	app, err := NewAppWithRuntime(cfg, log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	created := createSandboxForTest(t, app, "base", http.StatusCreated)
+
+	req := httptest.NewRequest(http.MethodGet, "/sandboxes/"+created.SandboxID+"/ports/5000", nil)
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected port lookup status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response SandboxPortResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode port response: %v", err)
+	}
+
+	if response.ContainerPort != 5000 || response.Host != "192.0.2.10" || response.HostPort != 38123 {
+		t.Fatalf("unexpected port response: %#v", response)
+	}
+	if response.URL != "http://192.0.2.10:38123" {
+		t.Fatalf("expected HTTP URL with advertised host, got %q", response.URL)
+	}
+	if response.WSURL != "ws://192.0.2.10:38123" {
+		t.Fatalf("expected WS URL with advertised host, got %q", response.WSURL)
+	}
+}
+
+func TestGetSandboxPortReturnsNotFoundForUnpublishedPort(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Traffic.AdvertisedHost = "192.0.2.10"
+	app := newTestApp(t, cfg)
+
+	created := createSandboxForTest(t, app, "base", http.StatusCreated)
+
+	req := httptest.NewRequest(http.MethodGet, "/sandboxes/"+created.SandboxID+"/ports/5000", nil)
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected unpublished port status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "docker.published_ports") {
+		t.Fatalf("expected helpful unpublished port error, got %s", rec.Body.String())
+	}
+}
+
 func TestPauseAndConnectCallRuntime(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)

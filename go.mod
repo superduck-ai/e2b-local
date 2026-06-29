@@ -14,9 +14,12 @@ require (
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/spf13/cobra v1.8.1
 	github.com/superduck-ai/e2b-go-sdk v0.0.0-20260609140155-cfd77b06d480
+	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/sys v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/vishvananda/netns v0.0.5 // indirect
 
 require (
 	github.com/Microsoft/go-winio v0.4.14 // indirect

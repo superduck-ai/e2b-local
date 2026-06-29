@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,6 +100,7 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 		}
 		app.GetTemplates(c, e2bapi.GetTemplatesParams{TeamID: teamID})
 	})
+	router.GET("/sandboxes/:sandboxID/ports/:port", app.handleGetSandboxPort)
 	router.PUT("/_e2b/template-files/:templateID/:hash", app.handleTemplateFileUpload)
 	router.NoRoute(app.handleNoRoute)
 
@@ -236,6 +239,83 @@ func (a *App) validateTemplateID(templateID string) error {
 	return nil
 }
 
+func (a *App) handleGetSandboxPort(c *gin.Context) {
+	sandboxID := strings.TrimSpace(c.Param("sandboxID"))
+	if sandboxID == "" {
+		writeError(c, http.StatusNotFound, "sandbox not found")
+		return
+	}
+
+	containerPort, err := strconv.Atoi(strings.TrimSpace(c.Param("port")))
+	if err != nil || containerPort <= 0 || containerPort > 65535 {
+		writeError(c, http.StatusBadRequest, "port must be between 1 and 65535")
+		return
+	}
+
+	record, err := a.callbacks.GetSandbox(a.callbackContext(c), sandboxID)
+	if err != nil {
+		writeGatewayError(c, err, http.StatusNotFound)
+		return
+	}
+
+	mapping, ok := sandboxPortMapping(record.RuntimeInfo.PublishedPorts, containerPort)
+	if !ok {
+		writeError(c, http.StatusNotFound, fmt.Sprintf("sandbox %s port %d is not published; configure docker.published_ports or Dockerfile EXPOSE", sandboxID, containerPort))
+		return
+	}
+
+	host, err := a.advertisedTrafficHost()
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, sandboxPortResponse(mapping, host))
+}
+
+func (a *App) advertisedTrafficHost() (string, error) {
+	host := strings.TrimSpace(a.cfg.Traffic.AdvertisedHost)
+	if host != "" {
+		return host, nil
+	}
+	return DetectTrafficAdvertisedHost(a.cfg.Traffic)
+}
+
+func sandboxPortMapping(mappings []SandboxPortMapping, containerPort int) (SandboxPortMapping, bool) {
+	for _, mapping := range mappings {
+		if mapping.ContainerPort != containerPort {
+			continue
+		}
+		if mapping.HostPort <= 0 {
+			continue
+		}
+		if protocol := strings.ToLower(strings.TrimSpace(mapping.Protocol)); protocol != "" && protocol != "tcp" {
+			continue
+		}
+		if strings.TrimSpace(mapping.Protocol) == "" {
+			mapping.Protocol = "tcp"
+		}
+		return mapping, true
+	}
+	return SandboxPortMapping{}, false
+}
+
+func sandboxPortResponse(mapping SandboxPortMapping, host string) SandboxPortResponse {
+	host = strings.TrimSpace(host)
+	hostPort := net.JoinHostPort(host, strconv.Itoa(mapping.HostPort))
+	protocol := strings.ToLower(strings.TrimSpace(mapping.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	return SandboxPortResponse{
+		ContainerPort: mapping.ContainerPort,
+		Host:          host,
+		HostPort:      mapping.HostPort,
+		URL:           "http://" + hostPort,
+		WSURL:         "ws://" + hostPort,
+		Protocol:      protocol,
+	}
+}
 func volumeErrorStatus(err error) int {
 	if errdefs.IsNotFound(err) {
 		return http.StatusNotFound

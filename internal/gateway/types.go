@@ -76,6 +76,15 @@ type VolumeResponse struct {
 	Token    string `json:"token,omitempty"`
 }
 
+type SandboxPortResponse struct {
+	ContainerPort int    `json:"containerPort"`
+	Host          string `json:"host"`
+	HostPort      int    `json:"hostPort"`
+	URL           string `json:"url"`
+	WSURL         string `json:"wsUrl"`
+	Protocol      string `json:"protocol,omitempty"`
+}
+
 type SandboxRecord struct {
 	ID                  string
 	TemplateID          string

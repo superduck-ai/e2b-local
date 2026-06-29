@@ -31,14 +31,22 @@ type SandboxRuntimeCreateRequest struct {
 }
 
 type SandboxRuntimeInfo struct {
-	SandboxID     string
-	EnvdURL       string
-	ContainerID   string
-	ContainerName string
-	ContainerIP   string
-	HostPort      string
-	MachineID     string
-	VolumeMounts  []VolumeMount
+	SandboxID      string
+	EnvdURL        string
+	ContainerID    string
+	ContainerName  string
+	ContainerIP    string
+	HostPort       string
+	MachineID      string
+	VolumeMounts   []VolumeMount
+	PublishedPorts []SandboxPortMapping
+}
+
+type SandboxPortMapping struct {
+	ContainerPort int
+	HostIP        string
+	HostPort      int
+	Protocol      string
 }
 
 type SandboxRuntimeInspection struct {

@@ -657,6 +657,9 @@ func mergeSandboxRuntimeInfo(existing SandboxRuntimeInfo, update SandboxRuntimeI
 	if len(update.VolumeMounts) == 0 {
 		update.VolumeMounts = existing.VolumeMounts
 	}
+	if len(update.PublishedPorts) == 0 {
+		update.PublishedPorts = existing.PublishedPorts
+	}
 	return update
 }
 
