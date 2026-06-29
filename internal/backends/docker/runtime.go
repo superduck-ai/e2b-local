@@ -41,6 +41,7 @@ type GatewayTemplate = gateway.GatewayTemplate
 type RuntimeVolume = gateway.RuntimeVolume
 type SandboxLogsRequest = gateway.SandboxLogsRequest
 type SandboxMetricsRequest = gateway.SandboxMetricsRequest
+type SandboxPortMapping = gateway.SandboxPortMapping
 type SandboxRecord = gateway.SandboxRecord
 type SandboxRuntimeCreateRequest = gateway.SandboxRuntimeCreateRequest
 type SandboxRuntimeInfo = gateway.SandboxRuntimeInfo
@@ -54,6 +55,7 @@ type VolumeMount = gateway.VolumeMount
 const dockerEnvdPath = "/usr/local/bin/envd"
 const dockerEnvdPort = 49983
 const dockerEnvdHostIP = "127.0.0.1"
+const dockerPublishedHostIP = "0.0.0.0"
 const dockerEnvdBinaryAMD64 = "envd-bin/envd-linux-amd64"
 const dockerEnvdBinaryARM64 = "envd-bin/envd-linux-arm64"
 const defaultSandboxTimeoutSeconds = gateway.DefaultSandboxTimeoutSeconds
@@ -180,8 +182,14 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 		return SandboxRuntimeInfo{}, err
 	}
 	imageLabels := r.imageLabels(ctx, imageRef)
+	publishedPorts, err := r.publishedContainerPorts(ctx, imageRef)
+	if err != nil {
+		return SandboxRuntimeInfo{}, err
+	}
 
 	envdPort := dockerEnvdNatPort()
+	exposedPorts := dockerExposedPorts(envdPort, publishedPorts)
+	portBindings := dockerPortBindings(envdPort, publishedPorts, r.cfg.PublishedHostIP)
 	containerName := r.cfg.ContainerNamePrefix + req.SandboxID
 	initEnabled := true
 	volumeMounts, mounts, err := r.mounts(ctx, req.VolumeMounts, envdBinary)
@@ -199,17 +207,13 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 			Env:          envVars(req.EnvVars),
 			Entrypoint:   []string{dockerEnvdPath},
 			Cmd:          r.containerCommand(imageLabels[dockerLocalTemplateStartCmdLabel]),
-			ExposedPorts: nat.PortSet{envdPort: struct{}{}},
+			ExposedPorts: exposedPorts,
 			Labels:       dockerSandboxLabels(labelReq, templateID, imageRef),
 		},
 		&container.HostConfig{
-			Init: &initEnabled,
-			PortBindings: nat.PortMap{
-				envdPort: []nat.PortBinding{{
-					HostIP: dockerEnvdHostIP,
-				}},
-			},
-			Mounts: mounts,
+			Init:         &initEnabled,
+			PortBindings: portBindings,
+			Mounts:       mounts,
 		},
 		&network.NetworkingConfig{},
 		containerCreatePlatform(selectedPlatform),
@@ -1752,6 +1756,94 @@ func (r *DockerRuntime) imageLabels(ctx context.Context, imageRef string) map[st
 	return labels
 }
 
+func (r *DockerRuntime) publishedContainerPorts(ctx context.Context, imageRef string) ([]int, error) {
+	inspect, _, err := r.client.ImageInspectWithRaw(ctx, imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("inspect docker image exposed ports: %w", err)
+	}
+
+	ports := append([]int(nil), r.cfg.PublishedPorts...)
+	if inspect.Config != nil {
+		ports = append(ports, dockerTCPPortsFromSet(inspect.Config.ExposedPorts)...)
+	}
+	return normalizeDockerPublishedPorts(ports), nil
+}
+
+func normalizeDockerPublishedPorts(ports []int) []int {
+	seen := map[int]struct{}{}
+	result := make([]int, 0, len(ports))
+	for _, port := range ports {
+		if port <= 0 || port > 65535 || port == dockerEnvdPort {
+			continue
+		}
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		result = append(result, port)
+	}
+	sort.Ints(result)
+	return result
+}
+
+func dockerTCPPortsFromSet(portSet nat.PortSet) []int {
+	ports := make([]int, 0, len(portSet))
+	for port := range portSet {
+		containerPort, protocol, ok := parseDockerNatPort(port)
+		if !ok || protocol != "tcp" {
+			continue
+		}
+		ports = append(ports, containerPort)
+	}
+	return ports
+}
+
+func parseDockerNatPort(port nat.Port) (int, string, bool) {
+	parts := strings.SplitN(string(port), "/", 2)
+	if len(parts) != 2 {
+		return 0, "", false
+	}
+	containerPort, err := strconv.Atoi(parts[0])
+	if err != nil || containerPort <= 0 || containerPort > 65535 {
+		return 0, "", false
+	}
+	protocol := strings.ToLower(strings.TrimSpace(parts[1]))
+	if protocol == "" {
+		return 0, "", false
+	}
+	return containerPort, protocol, true
+}
+
+func dockerExposedPorts(envdPort nat.Port, publishedPorts []int) nat.PortSet {
+	portSet := nat.PortSet{envdPort: struct{}{}}
+	for _, port := range publishedPorts {
+		portSet[dockerTCPNatPort(port)] = struct{}{}
+	}
+	return portSet
+}
+
+func dockerPortBindings(envdPort nat.Port, publishedPorts []int, publishedHostIP string) nat.PortMap {
+	portMap := nat.PortMap{
+		envdPort: []nat.PortBinding{{
+			HostIP: dockerEnvdHostIP,
+		}},
+	}
+	hostIP := strings.TrimSpace(publishedHostIP)
+	if hostIP == "" {
+		hostIP = dockerPublishedHostIP
+	}
+	for _, port := range publishedPorts {
+		portMap[dockerTCPNatPort(port)] = []nat.PortBinding{{
+			HostIP: hostIP,
+		}}
+	}
+	return portMap
+}
+
+func dockerTCPNatPort(port int) nat.Port {
+	return nat.Port(fmt.Sprintf("%d/tcp", port))
+}
+
 func (r *DockerRuntime) containerCommand(startCmd string) []string {
 	cmd := []string{"-isnotfc", "-port", fmt.Sprintf("%d", dockerEnvdPort)}
 	if strings.TrimSpace(startCmd) != "" {
@@ -1852,6 +1944,7 @@ func (r *DockerRuntime) inspectRuntimeInfo(ctx context.Context, info SandboxRunt
 	info.HostPort = bindings[0].HostPort
 	info.EnvdURL = fmt.Sprintf("http://%s:%s", dockerEnvdHost(bindings[0]), info.HostPort)
 	info.ContainerIP = dockerContainerIP(inspect.NetworkSettings)
+	info.PublishedPorts = dockerPublishedPortsFromBindings(inspect.NetworkSettings.Ports)
 	if info.ContainerName == "" {
 		info.ContainerName = strings.TrimPrefix(inspect.Name, "/")
 	}
@@ -1861,6 +1954,41 @@ func (r *DockerRuntime) inspectRuntimeInfo(ctx context.Context, info SandboxRunt
 
 func dockerEnvdNatPort() nat.Port {
 	return nat.Port(fmt.Sprintf("%d/tcp", dockerEnvdPort))
+}
+
+func dockerPublishedPortsFromBindings(ports nat.PortMap) []SandboxPortMapping {
+	if len(ports) == 0 {
+		return nil
+	}
+	result := []SandboxPortMapping{}
+	for port, bindings := range ports {
+		containerPort, protocol, ok := parseDockerNatPort(port)
+		if !ok || containerPort == dockerEnvdPort {
+			continue
+		}
+		for _, binding := range bindings {
+			hostPort, err := strconv.Atoi(strings.TrimSpace(binding.HostPort))
+			if err != nil || hostPort <= 0 {
+				continue
+			}
+			result = append(result, SandboxPortMapping{
+				ContainerPort: containerPort,
+				HostIP:        strings.TrimSpace(binding.HostIP),
+				HostPort:      hostPort,
+				Protocol:      protocol,
+			})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ContainerPort != result[j].ContainerPort {
+			return result[i].ContainerPort < result[j].ContainerPort
+		}
+		if result[i].Protocol != result[j].Protocol {
+			return result[i].Protocol < result[j].Protocol
+		}
+		return result[i].HostPort < result[j].HostPort
+	})
+	return result
 }
 
 func dockerEnvdHost(binding nat.PortBinding) string {

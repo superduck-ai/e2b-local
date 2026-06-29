@@ -1,12 +1,15 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,6 +20,7 @@ const (
 
 	defaultRuntimeType                 = "docker"
 	defaultDockerContainerNamePrefix   = "e2b-envd-"
+	defaultDockerPublishedHostIP       = "0.0.0.0"
 	defaultDockerHealthTimeoutSeconds  = 30
 	defaultOrbstackMachineNamePrefix   = "e2b-sandbox-"
 	defaultOrbstackDefaultMemory       = "2G"
@@ -32,10 +36,14 @@ const (
 	defaultAppleContainerCPUs          = 4
 	defaultAppleContainerMemoryMB      = 1024
 	defaultTemplateBuildMaxConcurrent  = 2
+	defaultTrafficProbeAddr            = "8.8.8.8:80"
 )
+
+var errRouteDetectionUnsupported = errors.New("route table detection is unsupported on this platform")
 
 type Config struct {
 	Server         ServerConfig                `yaml:"server"`
+	Traffic        TrafficConfig               `yaml:"traffic"`
 	Runtime        RuntimeConfig               `yaml:"runtime"`
 	Docker         DockerRuntimeConfig         `yaml:"docker"`
 	Orbstack       OrbstackRuntimeConfig       `yaml:"orbstack"`
@@ -45,6 +53,12 @@ type Config struct {
 
 type ServerConfig struct {
 	Addr string `yaml:"addr"`
+}
+
+type TrafficConfig struct {
+	AdvertisedHost      string `yaml:"advertised_host"`
+	Interface           string `yaml:"interface"`
+	AdvertisedProbeAddr string `yaml:"advertised_probe_addr"`
 }
 
 type RuntimeConfig struct {
@@ -60,6 +74,8 @@ type DockerRuntimeConfig struct {
 	Platform             string `yaml:"platform"`
 	ContainerNamePrefix  string `yaml:"container_name_prefix"`
 	EnvdBinary           string `yaml:"envd_binary"`
+	PublishedPorts       []int  `yaml:"published_ports"`
+	PublishedHostIP      string `yaml:"published_host_ip"`
 	HealthTimeoutSeconds int    `yaml:"health_timeout_seconds"`
 }
 
@@ -107,12 +123,16 @@ func DefaultConfig() Config {
 		Server: ServerConfig{
 			Addr: defaultServerAddr,
 		},
+		Traffic: TrafficConfig{
+			AdvertisedProbeAddr: defaultTrafficProbeAddr,
+		},
 		Runtime: RuntimeConfig{
 			Type: defaultRuntimeType,
 		},
 		Docker: DockerRuntimeConfig{
 			Host:                 defaultDockerHost(),
 			ContainerNamePrefix:  defaultDockerContainerNamePrefix,
+			PublishedHostIP:      defaultDockerPublishedHostIP,
 			HealthTimeoutSeconds: defaultDockerHealthTimeoutSeconds,
 		},
 		Orbstack: OrbstackRuntimeConfig{
@@ -273,6 +293,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("server.addr is required")
 	}
 
+	if err := c.Traffic.Validate(); err != nil {
+		return err
+	}
+
 	if c.Runtime.Type == "" {
 		return fmt.Errorf("runtime.type is required")
 	}
@@ -308,6 +332,168 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func (c Config) ResolveTrafficAdvertisedHost() (Config, error) {
+	if strings.TrimSpace(c.Traffic.AdvertisedHost) != "" {
+		return c, nil
+	}
+
+	host, err := DetectTrafficAdvertisedHost(c.Traffic)
+	if err != nil {
+		return Config{}, err
+	}
+	c.Traffic.AdvertisedHost = host
+	return c, nil
+}
+
+func DetectTrafficAdvertisedHost(cfg TrafficConfig) (string, error) {
+	iface := strings.TrimSpace(cfg.Interface)
+	if iface != "" {
+		host, err := DetectInterfaceHost(iface)
+		if err != nil {
+			return "", fmt.Errorf("detect advertised host using traffic.interface %q: %w", iface, err)
+		}
+		return host, nil
+	}
+
+	host, routeErr := detectRouteOutboundHost(cfg.AdvertisedProbeAddr)
+	if routeErr == nil {
+		return host, nil
+	}
+
+	host, err := detectUDPOutboundHost(cfg.AdvertisedProbeAddr)
+	if err != nil {
+		if !errors.Is(routeErr, errRouteDetectionUnsupported) {
+			return "", fmt.Errorf("%w; route table detection also failed: %v", err, routeErr)
+		}
+		return "", err
+	}
+	return host, nil
+}
+
+func DetectOutboundHost(probeAddr string) (string, error) {
+	return DetectTrafficAdvertisedHost(TrafficConfig{AdvertisedProbeAddr: probeAddr})
+}
+
+func DetectInterfaceHost(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("interface name is required")
+	}
+
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return "", err
+	}
+	if iface.Flags&net.FlagUp == 0 {
+		return "", fmt.Errorf("interface is not up")
+	}
+	if iface.Flags&net.FlagLoopback != 0 {
+		return "", fmt.Errorf("loopback interface is not a valid advertised interface")
+	}
+
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return "", err
+	}
+	for _, addr := range addrs {
+		ip := ipFromAddr(addr)
+		if isUsableAdvertisedIP(ip) {
+			return ip.To4().String(), nil
+		}
+	}
+	return "", fmt.Errorf("interface has no usable IPv4 address")
+}
+
+func detectUDPOutboundHost(probeAddr string) (string, error) {
+	probeAddr = strings.TrimSpace(probeAddr)
+	if probeAddr == "" {
+		return "", fmt.Errorf("traffic.advertised_probe_addr is required when traffic.advertised_host is empty")
+	}
+
+	dialer := net.Dialer{Timeout: time.Second}
+	conn, err := dialer.Dial("udp", probeAddr)
+	if err != nil {
+		return "", fmt.Errorf("detect outbound host using %s: %w", probeAddr, err)
+	}
+	defer conn.Close()
+
+	udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || udpAddr == nil || udpAddr.IP == nil {
+		return "", fmt.Errorf("detect outbound host using %s: local address is not UDP", probeAddr)
+	}
+	ip := udpAddr.IP
+	if !isUsableAdvertisedIP(ip) {
+		return "", fmt.Errorf("detect outbound host using %s returned non-routable address %s; set traffic.advertised_host explicitly", probeAddr, ip.String())
+	}
+	return ip.To4().String(), nil
+}
+
+func ipFromAddr(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return nil
+	}
+}
+
+func isUsableAdvertisedIP(ip net.IP) bool {
+	if ip == nil || ip.To4() == nil {
+		return false
+	}
+	return !ip.IsUnspecified() &&
+		!ip.IsLoopback() &&
+		!ip.IsMulticast() &&
+		!ip.IsLinkLocalUnicast()
+}
+
+func (c TrafficConfig) Validate() error {
+	if err := validateAdvertisedHost(c.AdvertisedHost); err != nil {
+		return err
+	}
+	if err := validateInterfaceName(c.Interface); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(c.AdvertisedProbeAddr) == "" {
+		return fmt.Errorf("traffic.advertised_probe_addr is required")
+	}
+	if _, _, err := net.SplitHostPort(c.AdvertisedProbeAddr); err != nil {
+		return fmt.Errorf("traffic.advertised_probe_addr must be host:port: %w", err)
+	}
+	return nil
+}
+
+func validateInterfaceName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if strings.ContainsAny(name, " \t\r\n") {
+		return fmt.Errorf("traffic.interface must be a single interface name")
+	}
+	return nil
+}
+
+func validateAdvertisedHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil
+	}
+	if strings.Contains(host, "://") {
+		return fmt.Errorf("traffic.advertised_host must be a host or IP without scheme")
+	}
+	if strings.Contains(host, "/") {
+		return fmt.Errorf("traffic.advertised_host must be a host or IP without path")
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return fmt.Errorf("traffic.advertised_host must not include a port")
+	}
+	return nil
+}
+
 func (c DockerRuntimeConfig) Validate() error {
 	if c.Host == "" {
 		return fmt.Errorf("docker.host is required")
@@ -323,6 +509,19 @@ func (c DockerRuntimeConfig) Validate() error {
 
 	if c.HealthTimeoutSeconds <= 0 {
 		return fmt.Errorf("docker.health_timeout_seconds must be positive")
+	}
+
+	if strings.TrimSpace(c.PublishedHostIP) == "" {
+		return fmt.Errorf("docker.published_host_ip is required")
+	}
+	if ip := net.ParseIP(strings.TrimSpace(c.PublishedHostIP)); ip == nil {
+		return fmt.Errorf("docker.published_host_ip must be an IP address")
+	}
+
+	for _, port := range c.PublishedPorts {
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("docker.published_ports values must be between 1 and 65535")
+		}
 	}
 
 	if _, err := url.ParseRequestURI(c.Host); err != nil {

@@ -226,13 +226,23 @@ A compact Docker config:
 
 ```yaml
 server:
-  addr: "127.0.0.1:3000"
+  addr: "0.0.0.0:3000"
+
+traffic:
+  # Empty means e2b-local detects the outbound interface IP on startup.
+  # advertised_host: "192.168.1.10"
+  # Optional: force a host interface, for example when VPN/TUN software changes
+  # the default route on macOS.
+  # interface: "en0"
+  advertised_probe_addr: "8.8.8.8:80"
 
 runtime:
   type: "docker"
 
 docker:
   container_name_prefix: "e2b-envd-"
+  published_ports: [5000]
+  published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
 ```
 
@@ -241,12 +251,50 @@ Important fields:
 - `runtime.type` supports `docker`, `orbstack`, and `applecontainer`.
 - `docker.host` can be omitted. The gateway uses `DOCKER_HOST`, then the current user's OrbStack socket when present, then `unix:///var/run/docker.sock`.
 - Docker templates are discovered from tagged local Docker images. The gateway never pulls images; pull, build, and tag them locally before creating sandboxes.
+- `traffic.advertised_host` is the IP or host returned by sandbox port lookups. Empty means the gateway detects it on startup. `traffic.interface` can force a host interface such as `en0`; otherwise macOS falls back to UDP probing, while Linux tries netlink route detection before UDP probing.
 - `docker.platform` is optional. Empty means Docker chooses the image platform, then the gateway inspects the selected image.
 - `docker.envd_binary` is optional. Empty means the gateway picks `envd-bin/envd-linux-amd64` or `envd-bin/envd-linux-arm64` from the selected image architecture. When set, it can be relative to the config file.
+- `docker.published_ports` publishes business ports such as `5000` from every sandbox on dynamic host ports. `docker.published_host_ip` defaults to `0.0.0.0` for LAN access.
 - `orbstack.envd_binary` can be relative to the config file. The gateway copies it into each VM before installing the service.
 - `orbstack.volume_host_path` stores local volume directories on macOS and supports `~` and config-relative paths.
 - `applecontainer.envd_binary` can be relative to the config file. The gateway copies it into Apple Container sandboxes unless the selected template sets `prebaked_envd_path`.
 - `applecontainer.templates` maps local template IDs to Apple Container image references. The gateway does not pull images; pull them with `container image pull` first.
+
+### Advertised Host Detection
+
+Docker business port URLs use the host selected by the `traffic` config. The startup resolution order is:
+
+1. `traffic.advertised_host`, when set, is used as-is.
+2. `traffic.interface`, when set, must name a host interface with a usable IPv4 address. If it cannot be resolved, startup fails instead of silently falling back.
+3. On Linux, e2b-local uses netlink route lookup for `traffic.advertised_probe_addr` and advertises the selected route source/interface IP.
+4. The final fallback is UDP probing with `traffic.advertised_probe_addr`.
+
+On macOS with VPN/TUN software such as Surge, route lookup for public addresses may select `utun*`. For LAN access, set `traffic.interface: "en0"` or set `traffic.advertised_host` to the exact LAN IP.
+
+### Docker Business Ports
+
+`docker.published_ports` publishes the same container port from every sandbox on a different Docker-assigned host port. For example, two sandboxes can both listen on container port `5000`, while Docker exposes them as `192.168.1.10:38123` and `192.168.1.10:39201`.
+
+Resolve a published port with:
+
+```bash
+curl http://127.0.0.1:3000/sandboxes/<sandboxID>/ports/5000
+```
+
+Example response:
+
+```json
+{
+  "containerPort": 5000,
+  "host": "192.168.1.10",
+  "hostPort": 38123,
+  "url": "http://192.168.1.10:38123",
+  "wsUrl": "ws://192.168.1.10:38123",
+  "protocol": "tcp"
+}
+```
+
+Unpublished ports return `404` with a message pointing at `docker.published_ports` or Dockerfile `EXPOSE`.
 
 ## Docker envd Helper
 
@@ -292,6 +340,7 @@ In Docker runtime:
 - The selected envd binary is mounted at `/usr/local/bin/envd`.
 - Requested E2B volumes use Docker native named volumes.
 - Sandbox responses return the direct runtime `envdURL` assigned by Docker.
+- Business ports declared with `docker.published_ports` or Dockerfile `EXPOSE` can be resolved with `GET /sandboxes/{sandboxID}/ports/{port}`. The response includes `url` and `wsUrl`, for example `http://192.168.1.10:38123`.
 
 Example sandbox request:
 

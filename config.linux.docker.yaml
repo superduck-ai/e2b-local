@@ -7,10 +7,9 @@ traffic:
   # detects the outbound interface IP on startup.
   # advertised_host: "192.168.1.10"
 
-  # Host network interface used as the advertised IP source. This Docker sample
-  # pins macOS Wi-Fi/LAN traffic to en0 so VPN/TUN software does not select utun.
-  # Comment this out on hosts where en0 does not exist.
-  interface: "en0"
+  # Optional host network interface used as the advertised IP source. When this
+  # is empty on Linux, e2b-local tries netlink route detection before UDP probing.
+  # interface: "eth0"
 
   # UDP dial target used only to choose the outbound interface when
   # advertised_host and interface are empty, or as the final fallback on Linux.
@@ -24,6 +23,7 @@ docker:
   # Omit host to use DOCKER_HOST, the current user's OrbStack socket when present,
   # or unix:///var/run/docker.sock.
   # host: "unix:///var/run/docker.sock"
+  host: "unix:///run/containerd/containerd.sock"
 
   # Docker templates are discovered from tagged local Docker images.
   # Pull or build images locally before using them as templates.

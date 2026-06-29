@@ -17,6 +17,7 @@ import (
 	gateway "e2b-local/internal/gateway"
 
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -44,6 +45,47 @@ func TestDockerReadyCommandRunsInShell(t *testing.T) {
 
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("expected ready command %#v, got %#v", want, cmd)
+	}
+}
+
+func TestNormalizeDockerPublishedPortsSortsDeduplicatesAndSkipsEnvd(t *testing.T) {
+	ports := normalizeDockerPublishedPorts([]int{5001, 0, 5000, 5000, dockerEnvdPort, 65536})
+	want := []int{5000, 5001}
+
+	if !reflect.DeepEqual(ports, want) {
+		t.Fatalf("expected normalized ports %#v, got %#v", want, ports)
+	}
+}
+
+func TestDockerPortBindingsPublishesBusinessPortsOnConfiguredHostIP(t *testing.T) {
+	envdPort := dockerEnvdNatPort()
+	bindings := dockerPortBindings(envdPort, []int{5000}, "0.0.0.0")
+
+	if got := bindings[envdPort][0].HostIP; got != dockerEnvdHostIP {
+		t.Fatalf("expected envd binding host IP %q, got %q", dockerEnvdHostIP, got)
+	}
+	if got := bindings[dockerTCPNatPort(5000)][0].HostIP; got != "0.0.0.0" {
+		t.Fatalf("expected business port host IP 0.0.0.0, got %q", got)
+	}
+}
+
+func TestDockerPublishedPortsFromBindingsSkipsEnvd(t *testing.T) {
+	mappings := dockerPublishedPortsFromBindings(map[nat.Port][]nat.PortBinding{
+		dockerEnvdNatPort(): []nat.PortBinding{{
+			HostIP:   dockerEnvdHostIP,
+			HostPort: "38122",
+		}},
+		dockerTCPNatPort(5000): []nat.PortBinding{{
+			HostIP:   "0.0.0.0",
+			HostPort: "38123",
+		}},
+	})
+
+	if len(mappings) != 1 {
+		t.Fatalf("expected one published business port, got %#v", mappings)
+	}
+	if mappings[0].ContainerPort != 5000 || mappings[0].HostPort != 38123 || mappings[0].Protocol != "tcp" {
+		t.Fatalf("unexpected published port mapping: %#v", mappings[0])
 	}
 }
 

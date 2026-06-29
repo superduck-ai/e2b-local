@@ -1,6 +1,14 @@
 server:
   addr: "127.0.0.1:3000"
 
+traffic:
+  # Empty means e2b-local detects the outbound interface IP on startup.
+  # Set this explicitly when the gateway should advertise a specific LAN IP.
+  # advertised_host: "192.168.1.10"
+  # Optional: force a host interface such as "en0" before automatic detection.
+  # interface: "en0"
+  advertised_probe_addr: "8.8.8.8:80"
+
 runtime:
   # docker: create one OrbStack/Docker container per sandbox.
   # orbstack: create one OrbStack VM per sandbox and run envd inside the machine.
@@ -17,6 +25,10 @@ docker:
   # Optional envd override. Empty means choose envd-bin/envd-linux-amd64 or envd-bin/envd-linux-arm64 from the image architecture.
   # envd_binary: "envd-bin/envd-linux-amd64"
   # envd runs on container port 49983; Docker assigns a dynamic localhost host port per sandbox.
+  # Business ports can be published on dynamic host ports and queried through
+  # GET /sandboxes/{sandboxID}/ports/{port}.
+  # published_ports: [5000]
+  published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
 
 orbstack:

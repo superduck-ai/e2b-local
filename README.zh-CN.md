@@ -180,13 +180,22 @@ Docker 会 inspect 选中镜像的架构，并把匹配的 `envd` 二进制 bind
 
 ```yaml
 server:
-  addr: "127.0.0.1:3000"
+  addr: "0.0.0.0:3000"
+
+traffic:
+  # 留空时 e2b-local 会在启动时自动探测出口网卡 IP。
+  # advertised_host: "192.168.1.10"
+  # 可选：强制使用宿主机网卡，比如 macOS 上被 VPN/TUN 改写默认路由时使用 en0。
+  # interface: "en0"
+  advertised_probe_addr: "8.8.8.8:80"
 
 runtime:
   type: "docker"
 
 docker:
   container_name_prefix: "e2b-envd-"
+  published_ports: [5000]
+  published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
 ```
 
@@ -195,12 +204,50 @@ docker:
 - `runtime.type` 支持 `docker`、`orbstack` 和 `applecontainer`。
 - `docker.host` 可以省略。gateway 会依次使用 `DOCKER_HOST`、当前用户的 OrbStack socket，以及 `unix:///var/run/docker.sock`。
 - Docker templates 来自本机已有 tag 的 Docker images。gateway 不会自动 pull 镜像；请先在本机 pull、build 并打好 tag 再创建 sandbox。
+- `traffic.advertised_host` 是端口查询接口返回给用户的 IP 或 host。留空时 gateway 会在启动时自动探测。`traffic.interface` 可以强制使用 `en0` 这类宿主机网卡；否则 macOS 回退到 UDP 探测，Linux 会先尝试 netlink 路由表，再回退到 UDP 探测。
 - `docker.platform` 是可选 override。留空时 Docker 自己选择镜像平台，gateway 再 inspect 选中的镜像。
 - `docker.envd_binary` 是可选 override。留空时 gateway 会按选中镜像架构自动选择 `envd-bin/envd-linux-amd64` 或 `envd-bin/envd-linux-arm64`；显式设置时支持相对配置文件路径。
+- `docker.published_ports` 会把 `5000` 这类业务端口发布到每个 sandbox 的动态宿主机端口；`docker.published_host_ip` 默认是 `0.0.0.0`，便于内网访问。
 - `orbstack.envd_binary` 可以写相对路径，gateway 会先解析再复制进 VM。
 - `orbstack.volume_host_path` 存放 macOS 本地 volume 目录，并支持 `~` 和相对配置文件路径。
 - `applecontainer.envd_binary` 可以写相对路径。除非选中 template 设置了 `prebaked_envd_path`，gateway 会先解析再复制进 Apple Container sandbox。
 - `applecontainer.templates` 把本地 template ID 映射到 Apple Container image reference。gateway 不会自动 pull 镜像，请先用 `container image pull` 拉到本机。
+
+### 对外 Host 探测
+
+Docker 业务端口返回的 URL 使用 `traffic` 配置选出的 host。启动时解析顺序是：
+
+1. 如果设置了 `traffic.advertised_host`，直接使用它。
+2. 如果设置了 `traffic.interface`，必须能在宿主机上找到这个网卡，并且网卡有可用 IPv4；失败时启动失败，不会静默回退。
+3. Linux 上会用 netlink 根据 `traffic.advertised_probe_addr` 查路由表，并使用路由选出的 source/interface IP。
+4. 最后回退到 UDP probing，也就是用 `traffic.advertised_probe_addr` 做 UDP dial 来让内核选择本地地址。
+
+macOS 上如果开启了 Surge、VPN 或 TUN，访问公网地址的路由可能会落到 `utun*`。内网访问场景建议设置 `traffic.interface: "en0"`，或者直接设置 `traffic.advertised_host` 为明确的局域网 IP。
+
+### Docker 业务端口
+
+`docker.published_ports` 会把每个 sandbox 里的同一个容器端口发布到不同的 Docker 动态宿主机端口。例如两个 sandbox 都监听容器内 `5000`，但对外可以分别是 `192.168.1.10:38123` 和 `192.168.1.10:39201`。
+
+查询 published port：
+
+```bash
+curl http://127.0.0.1:3000/sandboxes/<sandboxID>/ports/5000
+```
+
+示例响应：
+
+```json
+{
+  "containerPort": 5000,
+  "host": "192.168.1.10",
+  "hostPort": 38123,
+  "url": "http://192.168.1.10:38123",
+  "wsUrl": "ws://192.168.1.10:38123",
+  "protocol": "tcp"
+}
+```
+
+未发布的端口会返回 `404`，错误信息会提示配置 `docker.published_ports` 或 Dockerfile `EXPOSE`。
 
 ## Docker envd 调试脚本
 
@@ -246,6 +293,7 @@ Docker runtime 下：
 - 自动选择或显式配置的 envd binary 会挂载为容器内 `/usr/local/bin/envd`。
 - 请求里的 E2B volume 使用 Docker 原生 named volume。
 - Sandbox response 会返回 Docker runtime 分配的直连 `envdURL`。
+- 通过 `docker.published_ports` 或 Dockerfile `EXPOSE` 声明的业务端口，可以用 `GET /sandboxes/{sandboxID}/ports/{port}` 查询；响应里包含 `url` 和 `wsUrl`，例如 `http://192.168.1.10:38123`。
 
 示例 sandbox request：
 

@@ -149,6 +149,10 @@ func serveWithConfig(configPath string, logger *log.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	cfg, err = cfg.ResolveTrafficAdvertisedHost()
+	if err != nil {
+		return fmt.Errorf("failed to resolve advertised traffic host: %w", err)
+	}
 
 	app, err := newGatewayApp(cfg, logger)
 	if err != nil {

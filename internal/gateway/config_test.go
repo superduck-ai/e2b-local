@@ -33,6 +33,17 @@ func TestLoadConfigEmptyPathUsesDefaults(t *testing.T) {
 	if cfg.TemplateBuilds.MaxConcurrent != defaultTemplateBuildMaxConcurrent {
 		t.Fatalf("expected template build concurrency default %d, got %d", defaultTemplateBuildMaxConcurrent, cfg.TemplateBuilds.MaxConcurrent)
 	}
+
+	if cfg.Traffic.AdvertisedProbeAddr != defaultTrafficProbeAddr {
+		t.Fatalf("expected traffic probe addr %q, got %q", defaultTrafficProbeAddr, cfg.Traffic.AdvertisedProbeAddr)
+	}
+	if cfg.Traffic.Interface != "" {
+		t.Fatalf("expected traffic interface default to be empty, got %q", cfg.Traffic.Interface)
+	}
+
+	if cfg.Docker.PublishedHostIP != defaultDockerPublishedHostIP {
+		t.Fatalf("expected docker published host IP %q, got %q", defaultDockerPublishedHostIP, cfg.Docker.PublishedHostIP)
+	}
 }
 
 func TestDefaultConfigUsesDockerHostEnvironment(t *testing.T) {
@@ -71,6 +82,11 @@ func TestLoadConfigReadsDockerRuntime(t *testing.T) {
 server:
   addr: "127.0.0.1:4000"
 
+traffic:
+  advertised_host: "192.0.2.10"
+  interface: "en0"
+  advertised_probe_addr: "1.1.1.1:53"
+
 runtime:
   type: "docker"
 
@@ -79,6 +95,8 @@ docker:
   platform: "linux/amd64"
   container_name_prefix: "e2b-envd-"
   envd_binary: "/tmp/e2b-local-envd"
+  published_ports: [5000, 5001]
+  published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -100,6 +118,75 @@ docker:
 
 	if cfg.Docker.Platform != "linux/amd64" {
 		t.Fatalf("expected docker platform override, got %q", cfg.Docker.Platform)
+	}
+	if cfg.Traffic.AdvertisedHost != "192.0.2.10" {
+		t.Fatalf("expected traffic advertised host, got %q", cfg.Traffic.AdvertisedHost)
+	}
+	if cfg.Traffic.Interface != "en0" {
+		t.Fatalf("expected traffic interface, got %q", cfg.Traffic.Interface)
+	}
+	if cfg.Traffic.AdvertisedProbeAddr != "1.1.1.1:53" {
+		t.Fatalf("expected traffic probe addr, got %q", cfg.Traffic.AdvertisedProbeAddr)
+	}
+	if len(cfg.Docker.PublishedPorts) != 2 || cfg.Docker.PublishedPorts[0] != 5000 || cfg.Docker.PublishedPorts[1] != 5001 {
+		t.Fatalf("expected docker published ports, got %#v", cfg.Docker.PublishedPorts)
+	}
+	if cfg.Docker.PublishedHostIP != "0.0.0.0" {
+		t.Fatalf("expected docker published host IP, got %q", cfg.Docker.PublishedHostIP)
+	}
+}
+
+func TestLoadConfigRejectsInvalidTrafficAdvertisedHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+traffic:
+  advertised_host: "http://192.0.2.10"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected advertised_host with scheme to fail")
+	}
+}
+
+func TestLoadConfigRejectsInvalidTrafficInterface(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+traffic:
+  interface: "en 0"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected interface with whitespace to fail")
+	}
+}
+
+func TestResolveTrafficAdvertisedHostRejectsMissingConfiguredInterface(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Traffic.Interface = "e2b-local-missing0"
+
+	if _, err := cfg.ResolveTrafficAdvertisedHost(); err == nil {
+		t.Fatal("expected missing configured interface to fail")
+	}
+}
+
+func TestLoadConfigRejectsInvalidDockerPublishedPort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+docker:
+  published_ports: [0]
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected invalid docker published port to fail")
 	}
 }
 

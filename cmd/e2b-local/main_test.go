@@ -63,6 +63,7 @@ func TestRunDefaultsToServeWithConfigFlag(t *testing.T) {
 
 	cfg := gateway.DefaultConfig()
 	cfg.Server.Addr = "127.0.0.1:3999"
+	cfg.Traffic.AdvertisedHost = "192.0.2.10"
 
 	loadGatewayConfig = func(path string) (gateway.Config, error) {
 		if path != "root-config.yaml" {
