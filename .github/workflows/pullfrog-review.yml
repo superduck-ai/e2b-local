@@ -74,10 +74,9 @@ jobs:
           token: ${{ steps.duckpr-token.outputs.token }}
           push: disabled
         env:
-          # DuckPR reads local .env for local runtime validation. GitHub Actions
-          # cannot read your local .env, so mirror these values into repository
-          # secrets for the target repo.
-          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || secrets.ANTHROPIC_BASE_URL }}
+          # DuckPR passes llm_base_url when it dispatches the workflow. Keep an
+          # Actions variable fallback for manual workflow_dispatch runs.
+          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.ANTHROPIC_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_AGENT: claude
