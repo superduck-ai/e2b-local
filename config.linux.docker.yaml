@@ -7,10 +7,9 @@ traffic:
   # detects the outbound interface IP on startup.
   # advertised_host: "192.168.1.10"
 
-  # Optional host network interface used as the advertised IP source. This is
-  # useful on macOS when VPN/TUN software changes the default route; for LAN
-  # access, set this to the Wi-Fi/LAN interface such as "en0".
-  #interface: "en0"
+  # Optional host network interface used as the advertised IP source. When this
+  # is empty on Linux, e2b-local tries netlink route detection before UDP probing.
+  # interface: "eth0"
 
   # UDP dial target used only to choose the outbound interface when
   # advertised_host and interface are empty, or as the final fallback on Linux.

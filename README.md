@@ -260,6 +260,42 @@ Important fields:
 - `applecontainer.envd_binary` can be relative to the config file. The gateway copies it into Apple Container sandboxes unless the selected template sets `prebaked_envd_path`.
 - `applecontainer.templates` maps local template IDs to Apple Container image references. The gateway does not pull images; pull them with `container image pull` first.
 
+### Advertised Host Detection
+
+Docker business port URLs use the host selected by the `traffic` config. The startup resolution order is:
+
+1. `traffic.advertised_host`, when set, is used as-is.
+2. `traffic.interface`, when set, must name a host interface with a usable IPv4 address. If it cannot be resolved, startup fails instead of silently falling back.
+3. On Linux, e2b-local uses netlink route lookup for `traffic.advertised_probe_addr` and advertises the selected route source/interface IP.
+4. The final fallback is UDP probing with `traffic.advertised_probe_addr`.
+
+On macOS with VPN/TUN software such as Surge, route lookup for public addresses may select `utun*`. For LAN access, set `traffic.interface: "en0"` or set `traffic.advertised_host` to the exact LAN IP.
+
+### Docker Business Ports
+
+`docker.published_ports` publishes the same container port from every sandbox on a different Docker-assigned host port. For example, two sandboxes can both listen on container port `5000`, while Docker exposes them as `192.168.1.10:38123` and `192.168.1.10:39201`.
+
+Resolve a published port with:
+
+```bash
+curl http://127.0.0.1:3000/sandboxes/<sandboxID>/ports/5000
+```
+
+Example response:
+
+```json
+{
+  "containerPort": 5000,
+  "host": "192.168.1.10",
+  "hostPort": 38123,
+  "url": "http://192.168.1.10:38123",
+  "wsUrl": "ws://192.168.1.10:38123",
+  "protocol": "tcp"
+}
+```
+
+Unpublished ports return `404` with a message pointing at `docker.published_ports` or Dockerfile `EXPOSE`.
+
 ## Docker envd Helper
 
 To run a standalone envd container for manual debugging:

@@ -5,7 +5,7 @@ traffic:
   # Empty means e2b-local detects the outbound interface IP on startup.
   # Set this explicitly when the gateway should advertise a specific LAN IP.
   # advertised_host: "192.168.1.10"
-  # Optional: force a host interface such as "en0" before route/UDP detection.
+  # Optional: force a host interface such as "en0" before automatic detection.
   # interface: "en0"
   advertised_probe_addr: "8.8.8.8:80"
 

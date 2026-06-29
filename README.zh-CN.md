@@ -213,6 +213,42 @@ docker:
 - `applecontainer.envd_binary` 可以写相对路径。除非选中 template 设置了 `prebaked_envd_path`，gateway 会先解析再复制进 Apple Container sandbox。
 - `applecontainer.templates` 把本地 template ID 映射到 Apple Container image reference。gateway 不会自动 pull 镜像，请先用 `container image pull` 拉到本机。
 
+### 对外 Host 探测
+
+Docker 业务端口返回的 URL 使用 `traffic` 配置选出的 host。启动时解析顺序是：
+
+1. 如果设置了 `traffic.advertised_host`，直接使用它。
+2. 如果设置了 `traffic.interface`，必须能在宿主机上找到这个网卡，并且网卡有可用 IPv4；失败时启动失败，不会静默回退。
+3. Linux 上会用 netlink 根据 `traffic.advertised_probe_addr` 查路由表，并使用路由选出的 source/interface IP。
+4. 最后回退到 UDP probing，也就是用 `traffic.advertised_probe_addr` 做 UDP dial 来让内核选择本地地址。
+
+macOS 上如果开启了 Surge、VPN 或 TUN，访问公网地址的路由可能会落到 `utun*`。内网访问场景建议设置 `traffic.interface: "en0"`，或者直接设置 `traffic.advertised_host` 为明确的局域网 IP。
+
+### Docker 业务端口
+
+`docker.published_ports` 会把每个 sandbox 里的同一个容器端口发布到不同的 Docker 动态宿主机端口。例如两个 sandbox 都监听容器内 `5000`，但对外可以分别是 `192.168.1.10:38123` 和 `192.168.1.10:39201`。
+
+查询 published port：
+
+```bash
+curl http://127.0.0.1:3000/sandboxes/<sandboxID>/ports/5000
+```
+
+示例响应：
+
+```json
+{
+  "containerPort": 5000,
+  "host": "192.168.1.10",
+  "hostPort": 38123,
+  "url": "http://192.168.1.10:38123",
+  "wsUrl": "ws://192.168.1.10:38123",
+  "protocol": "tcp"
+}
+```
+
+未发布的端口会返回 `404`，错误信息会提示配置 `docker.published_ports` 或 Dockerfile `EXPOSE`。
+
 ## Docker envd 调试脚本
 
 如需单独启动一个 envd 容器做手动调试：
