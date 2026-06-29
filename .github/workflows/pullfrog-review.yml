@@ -72,10 +72,14 @@ jobs:
           LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN || secrets.LLM_API_KEY || secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_PROMPT: ${{ inputs.prompt }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_TRIGGER_EVENT: ${{ inputs.trigger_event }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          INPUT_LLM_BASE_URL: ${{ inputs.llm_base_url }}
           DUCKPR_APP_ID: ${{ secrets.DUCKPR_APP_ID }}
           DUCKPR_PRIVATE_KEY: ${{ secrets.DUCKPR_PRIVATE_KEY }}
           PULLFROG_PRIVATE_REPO_TOKEN: ${{ secrets.PULLFROG_PRIVATE_REPO_TOKEN }}
@@ -88,11 +92,11 @@ jobs:
           echo "github_event_name=${GITHUB_EVENT_NAME}"
           echo "github_ref=${GITHUB_REF}"
           echo "github_sha=${GITHUB_SHA}"
-          echo "input_pr_number=${{ inputs.pr_number }}"
-          echo "input_trigger_event=${{ inputs.trigger_event }}"
-          echo "input_head_sha=${{ inputs.head_sha }}"
+          echo "input_pr_number=${INPUT_PR_NUMBER}"
+          echo "input_trigger_event=${INPUT_TRIGGER_EVENT}"
+          echo "input_head_sha=${INPUT_HEAD_SHA}"
           echo "input_model=${PULLFROG_MODEL}"
-          if [ -n "${{ inputs.llm_base_url }}" ]; then
+          if [ -n "${INPUT_LLM_BASE_URL}" ]; then
             echo "llm_base_url_source=workflow_dispatch_input"
           else
             echo "llm_base_url_source=actions_variable"
@@ -146,6 +150,13 @@ jobs:
             exit 0
           fi
 
+          api_model="${PULLFROG_MODEL}"
+          if [[ "${api_model}" == anthropic/* ]]; then
+            api_model="${api_model#anthropic/}"
+          fi
+          export PULLFROG_API_MODEL="${api_model}"
+          echo "anthropic_api_model=${PULLFROG_API_MODEL}"
+
           echo "::group::Anthropic-compatible preflight"
           request_file="$(mktemp)"
           response_file="$(mktemp)"
@@ -153,7 +164,7 @@ jobs:
           status_file="$(mktemp)"
           node - >"${request_file}" <<'NODE'
           const payload = {
-            model: process.env.PULLFROG_MODEL,
+            model: process.env.PULLFROG_API_MODEL || process.env.PULLFROG_MODEL,
             max_tokens: 8,
             messages: [{ role: "user", content: "Reply with ok." }],
           };
@@ -164,6 +175,8 @@ jobs:
           echo "preflight_url=${preflight_url}"
           curl_exit=0
           curl -sS \
+            --connect-timeout 15 \
+            --max-time 60 \
             -o "${response_file}" \
             -D "${headers_file}" \
             -w "http_code=%{http_code}\ntime_total=%{time_total}\nremote_ip=%{remote_ip}\n" \
@@ -204,7 +217,7 @@ jobs:
           stream_status_file="$(mktemp)"
           node - >"${stream_request_file}" <<'NODE'
           const payload = {
-            model: process.env.PULLFROG_MODEL,
+            model: process.env.PULLFROG_API_MODEL || process.env.PULLFROG_MODEL,
             max_tokens: 16,
             stream: true,
             messages: [{ role: "user", content: "Reply with ok over a streaming response." }],
@@ -299,7 +312,7 @@ jobs:
             return `diagnostic_line_${index}: keep this synthetic context stable while replying with ok.`;
           }).join("\n");
           const payload = {
-            model: process.env.PULLFROG_MODEL,
+            model: process.env.PULLFROG_API_MODEL || process.env.PULLFROG_MODEL,
             max_tokens: 16,
             stream: true,
             messages: [
@@ -493,7 +506,7 @@ jobs:
           }
 
           await runCase("tool_stream", {
-            model: process.env.PULLFROG_MODEL,
+            model: process.env.PULLFROG_API_MODEL || process.env.PULLFROG_MODEL,
             max_tokens: 64,
             stream: true,
             tools: [
@@ -514,7 +527,7 @@ jobs:
           });
 
           await runCase("thinking_stream", {
-            model: process.env.PULLFROG_MODEL,
+            model: process.env.PULLFROG_API_MODEL || process.env.PULLFROG_MODEL,
             max_tokens: 1200,
             stream: true,
             thinking: { type: "enabled", budget_tokens: 1024 },
@@ -549,18 +562,19 @@ jobs:
 
           const config = {
             $schema: "https://opencode.ai/config.json",
+            small_model: model,
             provider: {
               anthropic: {
                 options: {
                   baseURL: "{env:LLM_BASE_URL}",
-                  apiKey: "{env:ANTHROPIC_API_KEY}",
-                  headers: {
-                    Authorization: "Bearer {env:ANTHROPIC_API_KEY}",
-                  },
+                  apiKey: "{env:LLM_API_KEY}",
                 },
                 models: {
                   [modelId]: {
                     name: modelId,
+                    headers: {
+                      Authorization: "Bearer {env:LLM_API_KEY}",
+                    },
                   },
                 },
               },
@@ -584,8 +598,8 @@ jobs:
           LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN || secrets.LLM_API_KEY || secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           OPENCODE_CONFIG: ${{ github.workspace }}/.duckpr/opencode/opencode.json
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_AGENT: opencode
