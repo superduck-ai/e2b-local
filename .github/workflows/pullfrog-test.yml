@@ -1,0 +1,57 @@
+name: Pullfrog Test Installation
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        type: string
+        required: true
+      model:
+        type: string
+        required: true
+      llm_base_url:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+  checks: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout private Pullfrog source
+        uses: actions/checkout@v6
+        with:
+          repository: superduck-ai/pullfrog-private
+          ref: main
+          token: ${{ secrets.PULLFROG_PRIVATE_REPO_TOKEN }}
+          path: .duckpr/pullfrog-private
+          persist-credentials: false
+
+      - name: Hide private Pullfrog checkout from git status
+        run: echo ".duckpr/" >> .git/info/exclude
+
+      - name: Run private Pullfrog installation test
+        uses: ./.duckpr/pullfrog-private
+        with:
+          prompt: ${{ inputs.prompt }}
+          model: ${{ inputs.model }}
+          push: disabled
+        env:
+          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+          PULLFROG_MODEL: ${{ inputs.model }}
+          PULLFROG_AGENT: claude
+          PULLFROG_SELF_HOSTED: "1"
+          PULLFROG_FORCE_LOCAL_CLI: "1"
