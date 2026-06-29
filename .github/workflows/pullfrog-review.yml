@@ -79,7 +79,6 @@ jobs:
           # secrets for the target repo.
           ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_AGENT: claude
           PULLFROG_SELF_HOSTED: "1"
