@@ -171,7 +171,14 @@ jobs:
           process.stdout.write(JSON.stringify(payload));
           NODE
 
-          preflight_url="${ANTHROPIC_BASE_URL%/}/v1/messages"
+          preflight_base_url="${ANTHROPIC_BASE_URL%/}"
+          if [[ "${preflight_base_url}" == */v1/messages ]]; then
+            preflight_url="${preflight_base_url}"
+          elif [[ "${preflight_base_url}" == */v1 ]]; then
+            preflight_url="${preflight_base_url}/messages"
+          else
+            preflight_url="${preflight_base_url}/v1/messages"
+          fi
           echo "preflight_url=${preflight_url}"
           curl_exit=0
           curl -sS \
@@ -547,9 +554,21 @@ jobs:
           const fs = require("node:fs");
 
           const model = process.env.PULLFROG_MODEL || "anthropic/glm-5.2";
+          const rawBaseURL = process.env.LLM_BASE_URL || "";
           const slash = model.indexOf("/");
           const provider = slash > 0 ? model.slice(0, slash) : "anthropic";
           const modelId = slash > 0 ? model.slice(slash + 1) : model;
+
+          function normalizeOpenCodeBaseURL(value) {
+            let baseURL = value.trim().replace(/\/+$/, "");
+            if (baseURL.endsWith("/messages")) {
+              baseURL = baseURL.slice(0, -"/messages".length).replace(/\/+$/, "");
+            }
+            if (!baseURL.endsWith("/v1")) {
+              baseURL = `${baseURL}/v1`;
+            }
+            return baseURL;
+          }
 
           if (provider !== "anthropic") {
             console.log(`Skipping Anthropic-compatible OpenCode provider config for ${model}.`);
@@ -566,7 +585,7 @@ jobs:
             provider: {
               anthropic: {
                 options: {
-                  baseURL: "{env:LLM_BASE_URL}",
+                  baseURL: rawBaseURL ? normalizeOpenCodeBaseURL(rawBaseURL) : "{env:LLM_BASE_URL}",
                   apiKey: "{env:LLM_API_KEY}",
                 },
                 models: {
