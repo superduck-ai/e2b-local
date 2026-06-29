@@ -69,8 +69,11 @@ jobs:
       - name: Diagnose Pullfrog LLM configuration
         continue-on-error: true
         env:
-          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN || secrets.LLM_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_PROMPT: ${{ inputs.prompt }}
           DUCKPR_APP_ID: ${{ secrets.DUCKPR_APP_ID }}
@@ -111,6 +114,9 @@ jobs:
 
           describeValue("ANTHROPIC_BASE_URL", process.env.ANTHROPIC_BASE_URL);
           describeValue("ANTHROPIC_AUTH_TOKEN", process.env.ANTHROPIC_AUTH_TOKEN, { secret: true });
+          describeValue("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY, { secret: true });
+          describeValue("LLM_BASE_URL", process.env.LLM_BASE_URL);
+          describeValue("LLM_API_KEY", process.env.LLM_API_KEY, { secret: true });
           describeValue("DUCKPR_APP_ID", process.env.DUCKPR_APP_ID, { secret: true });
           describeValue("DUCKPR_PRIVATE_KEY", process.env.DUCKPR_PRIVATE_KEY, { secret: true });
           describeValue("PULLFROG_PRIVATE_REPO_TOKEN", process.env.PULLFROG_PRIVATE_REPO_TOKEN, { secret: true });
@@ -517,6 +523,54 @@ jobs:
           NODE
           echo "::endgroup::"
 
+      - name: Configure OpenCode Anthropic-compatible provider
+        env:
+          LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
+          PULLFROG_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          mkdir -p .duckpr/opencode
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const model = process.env.PULLFROG_MODEL || "anthropic/glm-5.2";
+          const slash = model.indexOf("/");
+          const provider = slash > 0 ? model.slice(0, slash) : "anthropic";
+          const modelId = slash > 0 ? model.slice(slash + 1) : model;
+
+          if (provider !== "anthropic") {
+            console.log(`Skipping Anthropic-compatible OpenCode provider config for ${model}.`);
+            fs.writeFileSync(
+              ".duckpr/opencode/opencode.json",
+              `${JSON.stringify({ $schema: "https://opencode.ai/config.json" }, null, 2)}\n`
+            );
+            process.exit(0);
+          }
+
+          const config = {
+            $schema: "https://opencode.ai/config.json",
+            provider: {
+              anthropic: {
+                options: {
+                  baseURL: "{env:LLM_BASE_URL}",
+                  apiKey: "{env:ANTHROPIC_API_KEY}",
+                  headers: {
+                    Authorization: "Bearer {env:ANTHROPIC_API_KEY}",
+                  },
+                },
+                models: {
+                  [modelId]: {
+                    name: modelId,
+                  },
+                },
+              },
+            },
+          };
+
+          fs.writeFileSync(".duckpr/opencode/opencode.json", `${JSON.stringify(config, null, 2)}\n`);
+          console.log(`Configured OpenCode provider anthropic/${modelId}.`);
+          NODE
+
       - name: Run private Pullfrog review
         uses: ./.duckpr/pullfrog-private
         with:
@@ -525,12 +579,16 @@ jobs:
           token: ${{ steps.duckpr-token.outputs.token }}
           push: disabled
         env:
-          # DuckPR passes llm_base_url when it dispatches the workflow. Keep an
-          # Actions variable fallback for manual workflow_dispatch runs.
-          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          # DuckPR passes llm_base_url when it dispatches the workflow. Keep
+          # Actions variable fallbacks for manual workflow_dispatch runs.
+          LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN || secrets.LLM_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+          OPENCODE_CONFIG: ${{ github.workspace }}/.duckpr/opencode/opencode.json
           PULLFROG_MODEL: ${{ inputs.model }}
-          PULLFROG_AGENT: claude
+          PULLFROG_AGENT: opencode
           LOG_LEVEL: debug
           PULLFROG_SELF_HOSTED: "1"
           PULLFROG_FORCE_LOCAL_CLI: "1"
