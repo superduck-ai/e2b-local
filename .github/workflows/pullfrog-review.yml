@@ -54,11 +54,24 @@ jobs:
       - name: Hide private Pullfrog checkout from git status
         run: echo ".duckpr/" >> .git/info/exclude
 
+      - name: Create DuckPR GitHub App token
+        id: duckpr-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.DUCKPR_APP_ID }}
+          private-key: ${{ secrets.DUCKPR_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+          permission-checks: read
+          permission-actions: read
+
       - name: Run private Pullfrog review
         uses: ./.duckpr/pullfrog-private
         with:
           prompt: ${{ inputs.prompt }}
           model: ${{ inputs.model }}
+          token: ${{ steps.duckpr-token.outputs.token }}
           push: disabled
         env:
           # DuckPR reads local .env for local runtime validation. GitHub Actions
