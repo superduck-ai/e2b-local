@@ -188,6 +188,8 @@ jobs:
             preflight_url="${preflight_base_url}"
           elif [[ "${preflight_base_url}" == */v1 ]]; then
             preflight_url="${preflight_base_url}/messages"
+          elif [[ "${preflight_base_url}" == */messages ]]; then
+            preflight_url="${preflight_base_url%/messages}/v1/messages"
           else
             preflight_url="${preflight_base_url}/v1/messages"
           fi
@@ -423,7 +425,17 @@ jobs:
 
           echo "::group::Anthropic-compatible feature preflights"
           node <<'NODE'
-          const url = `${process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, "")}/v1/messages`;
+          function normalizeAnthropicMessagesURL(value) {
+            let baseURL = value.trim().replace(/\/+$/, "");
+            if (baseURL.endsWith("/v1/messages")) return baseURL;
+            if (baseURL.endsWith("/v1")) return `${baseURL}/messages`;
+            if (baseURL.endsWith("/messages")) {
+              baseURL = baseURL.slice(0, -"/messages".length).replace(/\/+$/, "");
+            }
+            return `${baseURL}/v1/messages`;
+          }
+
+          const url = normalizeAnthropicMessagesURL(process.env.ANTHROPIC_BASE_URL || "");
           const headers = {
             "content-type": "application/json",
             "anthropic-version": "2023-06-01",
@@ -614,6 +626,7 @@ jobs:
           };
 
           fs.writeFileSync(".duckpr/opencode/opencode.json", `${JSON.stringify(config, null, 2)}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `OPENCODE_CONFIG=${process.env.GITHUB_WORKSPACE}/.duckpr/opencode/opencode.json\n`);
           console.log(`Configured OpenCode provider anthropic/${modelId}.`);
           NODE
 
@@ -631,7 +644,13 @@ jobs:
           set -euo pipefail
           npm install -g @alibaba-group/open-code-review@1.6.5
           command -v ocr
-          ocr --version 2>/dev/null || ocr version 2>/dev/null || echo "ocr version check skipped"
+          if ! ocr --version >/tmp/ocr-version.log 2>&1 && \
+             ! ocr version >>/tmp/ocr-version.log 2>&1 && \
+             ! ocr --help >>/tmp/ocr-version.log 2>&1; then
+            cat /tmp/ocr-version.log
+            echo "::error::OpenCodeReview installed, but the ocr binary did not respond to version or help commands."
+            exit 1
+          fi
 
       - name: Configure OpenCodeReview
         if: matrix.reviewer == 'ocr' && inputs.pr_number != '0' && inputs.trigger_event != 'duckpr_installation_test'
@@ -668,6 +687,8 @@ jobs:
             :
           elif [[ "${ocr_url}" == */v1 ]]; then
             ocr_url="${ocr_url}/messages"
+          elif [[ "${ocr_url}" == */messages ]]; then
+            ocr_url="${ocr_url%/messages}/v1/messages"
           else
             ocr_url="${ocr_url}/v1/messages"
           fi
@@ -1173,7 +1194,6 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
-          OPENCODE_CONFIG: ${{ matrix.reviewer == 'opencode' && format('{0}/.duckpr/opencode/opencode.json', github.workspace) || '' }}
           PULLFROG_MODEL: ${{ inputs.model }}
           PULLFROG_AGENT: ${{ matrix.reviewer }}
           LOG_LEVEL: debug
