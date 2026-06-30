@@ -35,7 +35,12 @@ permissions:
 
 jobs:
   review:
+    name: Pullfrog review (${{ matrix.agent }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [claude, opencode]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -67,6 +72,7 @@ jobs:
           permission-actions: read
 
       - name: Diagnose Pullfrog LLM configuration
+        if: matrix.agent == 'opencode'
         continue-on-error: true
         env:
           LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
@@ -75,6 +81,7 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           PULLFROG_MODEL: ${{ inputs.model }}
+          PULLFROG_AGENT: ${{ matrix.agent }}
           PULLFROG_PROMPT: ${{ inputs.prompt }}
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
           INPUT_TRIGGER_EVENT: ${{ inputs.trigger_event }}
@@ -96,6 +103,7 @@ jobs:
           echo "input_trigger_event=${INPUT_TRIGGER_EVENT}"
           echo "input_head_sha=${INPUT_HEAD_SHA}"
           echo "input_model=${PULLFROG_MODEL}"
+          echo "input_agent=${PULLFROG_AGENT}"
           if [ -n "${INPUT_LLM_BASE_URL}" ]; then
             echo "llm_base_url_source=workflow_dispatch_input"
           else
@@ -544,6 +552,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Configure OpenCode Anthropic-compatible provider
+        if: matrix.agent == 'opencode'
         env:
           LLM_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
           PULLFROG_MODEL: ${{ inputs.model }}
@@ -619,9 +628,9 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ inputs.llm_base_url || vars.LLM_BASE_URL || vars.ANTHROPIC_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN || secrets.ANTHROPIC_API_KEY }}
-          OPENCODE_CONFIG: ${{ github.workspace }}/.duckpr/opencode/opencode.json
+          OPENCODE_CONFIG: ${{ matrix.agent == 'opencode' && format('{0}/.duckpr/opencode/opencode.json', github.workspace) || '' }}
           PULLFROG_MODEL: ${{ inputs.model }}
-          PULLFROG_AGENT: opencode
+          PULLFROG_AGENT: ${{ matrix.agent }}
           LOG_LEVEL: debug
           PULLFROG_SELF_HOSTED: "1"
           PULLFROG_FORCE_LOCAL_CLI: "1"
