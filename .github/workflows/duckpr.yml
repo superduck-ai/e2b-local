@@ -782,6 +782,8 @@ jobs:
           OCR_FAILURE_DELAY: ${{ vars.OCR_FAILURE_DELAY }}
           OCR_LOW_REMAINING_THRESHOLD: ${{ vars.OCR_LOW_REMAINING_THRESHOLD }}
           OCR_LOW_REMAINING_SPACING: ${{ vars.OCR_LOW_REMAINING_SPACING }}
+          OCR_REVIEWER: ${{ matrix.reviewer }}
+          OCR_MODEL: ${{ inputs.model }}
         with:
           github-token: ${{ steps.duckpr-token.outputs.token }}
           script: |
@@ -793,6 +795,10 @@ jobs:
             const stderrPath = "/tmp/ocr-stderr.log";
             const statusPath = "/tmp/ocr-status";
             const ocrExitCode = Number(readIfExists(statusPath).trim() || "0");
+            const reviewIdentity = {
+              agentId: process.env.OCR_REVIEWER || "ocr",
+              model: process.env.OCR_MODEL || "unknown",
+            };
 
             if (!Number.isInteger(prNumber) || prNumber <= 0) {
               throw new Error(`Invalid PR number: ${process.env.OCR_PR_NUMBER}`);
@@ -875,7 +881,7 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: prNumber,
                 commit_id: commitSha,
-                body: summaryBody,
+                body: prependReviewIdentityHeader(summaryBody),
                 event: "COMMENT",
                 comments: reviewComments.map(({ reviewComment }) => reviewComment),
               });
@@ -963,9 +969,28 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: prNumber,
                 commit_id: commitSha,
-                body,
+                body: prependReviewIdentityHeader(body),
                 event: "COMMENT",
               });
+            }
+
+            function prependReviewIdentityHeader(body) {
+              const reviewBody = String(body || "");
+              if (/^\s*\*\*DuckPR reviewer:\*\*/.test(reviewBody)) return reviewBody;
+              return buildReviewIdentityHeader() + reviewBody;
+            }
+
+            function buildReviewIdentityHeader() {
+              return (
+                `**DuckPR reviewer:** ${inlineCode(reviewIdentity.agentId)}\n` +
+                `**Model:** ${inlineCode(reviewIdentity.model)}\n\n`
+              );
+            }
+
+            function inlineCode(value) {
+              const text = String(value || "unknown").trim() || "unknown";
+              if (text.includes("`")) return text;
+              return `\`${text}\``;
             }
 
             function failIfOcrFailed() {
