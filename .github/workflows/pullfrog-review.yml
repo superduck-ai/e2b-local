@@ -37,6 +37,7 @@ jobs:
   review:
     name: PR review (${{ matrix.reviewer }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -744,9 +745,7 @@ jobs:
           echo "opencodereview_result_bytes=$(wc -c </tmp/ocr-result.json | tr -d ' ')"
           echo "opencodereview_stderr_bytes=$(wc -c </tmp/ocr-stderr.log | tr -d ' ')"
           if [ -s /tmp/ocr-stderr.log ]; then
-            echo "::group::OpenCodeReview stderr tail"
-            tail -n 80 /tmp/ocr-stderr.log
-            echo "::endgroup::"
+            echo "::notice::OpenCodeReview wrote stderr; raw stderr is suppressed to avoid leaking provider diagnostics."
           fi
 
       - name: Post OpenCodeReview PR review
@@ -786,9 +785,9 @@ jobs:
               const raw = fs.readFileSync(resultPath, "utf8").trim();
               result = raw ? JSON.parse(raw) : {};
             } catch (error) {
-              const stderr = readIfExists(stderrPath).trim();
+              const stderrBytes = Buffer.byteLength(readIfExists(stderrPath), "utf8");
               await createSummaryReview(
-                `**OpenCodeReview** could not parse review output.\n\n${stderr ? fencedBlock(stderr) : String(error.message || error)}`
+                `**OpenCodeReview** could not parse review output. stderr_bytes=${stderrBytes}. ${String(error.message || error)}`
               );
               failIfOcrFailed();
               return;
