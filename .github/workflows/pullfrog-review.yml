@@ -46,6 +46,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
+          persist-credentials: false
 
       - name: Checkout private Pullfrog source
         if: matrix.reviewer != 'ocr'
@@ -628,7 +629,8 @@ jobs:
         run: |
           set -euo pipefail
           npm install -g @alibaba-group/open-code-review@1.6.5
-          ocr --version || ocr version || true
+          command -v ocr
+          ocr --version 2>/dev/null || ocr version 2>/dev/null || echo "ocr version check skipped"
 
       - name: Configure OpenCodeReview
         if: matrix.reviewer == 'ocr' && inputs.pr_number != '0' && inputs.trigger_event != 'duckpr_installation_test'
@@ -697,10 +699,11 @@ jobs:
             });
 
             core.setOutput("base_ref", pullRequest.base.ref);
-            core.setOutput("head_sha", pullRequest.head.sha);
+            core.setOutput("head_sha", process.env.INPUT_HEAD_SHA || pullRequest.head.sha);
             core.setOutput("title", pullRequest.title || "");
         env:
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
 
       - name: Fetch OpenCodeReview refs
         if: matrix.reviewer == 'ocr' && inputs.pr_number != '0' && inputs.trigger_event != 'duckpr_installation_test'
@@ -716,6 +719,7 @@ jobs:
 
       - name: Run OpenCodeReview
         if: matrix.reviewer == 'ocr' && inputs.pr_number != '0' && inputs.trigger_event != 'duckpr_installation_test'
+        timeout-minutes: 20
         env:
           OCR_BASE_REF: ${{ steps.ocr-context.outputs.base_ref }}
           OCR_HEAD_SHA: ${{ steps.ocr-context.outputs.head_sha }}
@@ -735,6 +739,7 @@ jobs:
           status=$?
           set -e
 
+          echo "${status}" >/tmp/ocr-status
           echo "opencodereview_exit=${status}"
           echo "opencodereview_result_bytes=$(wc -c </tmp/ocr-result.json | tr -d ' ')"
           echo "opencodereview_stderr_bytes=$(wc -c </tmp/ocr-stderr.log | tr -d ' ')"
@@ -766,6 +771,8 @@ jobs:
             const commitSha = process.env.OCR_HEAD_SHA;
             const resultPath = "/tmp/ocr-result.json";
             const stderrPath = "/tmp/ocr-stderr.log";
+            const statusPath = "/tmp/ocr-status";
+            const ocrExitCode = Number(readIfExists(statusPath).trim() || "0");
 
             if (!Number.isInteger(prNumber) || prNumber <= 0) {
               throw new Error(`Invalid PR number: ${process.env.OCR_PR_NUMBER}`);
@@ -783,6 +790,7 @@ jobs:
               await createSummaryReview(
                 `**OpenCodeReview** could not parse review output.\n\n${stderr ? fencedBlock(stderr) : String(error.message || error)}`
               );
+              failIfOcrFailed();
               return;
             }
 
@@ -792,6 +800,7 @@ jobs:
             if (comments.length === 0) {
               const message = result.message || result.summary || "No comments generated.";
               await createSummaryReview(`**OpenCodeReview**: ${message}${formatWarnings(warnings)}`);
+              failIfOcrFailed();
               return;
             }
 
@@ -836,6 +845,7 @@ jobs:
 
             if (reviewComments.length === 0) {
               await createSummaryReview(summaryBody);
+              failIfOcrFailed();
               return;
             }
 
@@ -850,6 +860,7 @@ jobs:
                 comments: reviewComments.map(({ reviewComment }) => reviewComment),
               });
               logRateLimitQuota(response, "after batch createReview");
+              failIfOcrFailed();
               return;
             } catch (error) {
               console.log(`Batch createReview failed: ${error.message}`);
@@ -857,6 +868,13 @@ jobs:
               if (retry) {
                 console.log(`Cooling down ${retry.delayMs}ms after batch failure (${retry.source}: ${retry.detail}).`);
                 await sleep(retry.delayMs);
+              } else {
+                let fallbackBody = summaryBody + formatFailedInlineComments(
+                  reviewComments.map(({ comment }) => ({ comment, error: error.message }))
+                );
+                await createSummaryReview(fallbackBody);
+                failIfOcrFailed();
+                return;
               }
             }
 
@@ -914,15 +932,10 @@ jobs:
             );
             finalBody += formatSummaryComments(summaryComments);
 
-            if (failedComments.length > 0) {
-              finalBody += "\n\n---\n\n### Inline comments shown in summary";
-              for (const { comment, error } of failedComments) {
-                finalBody += "\n\n---\n\n";
-                finalBody += formatCommentMarkdown(comment, `GitHub could not post this inline: ${error}`);
-              }
-            }
+            finalBody += formatFailedInlineComments(failedComments);
 
             await createSummaryReview(finalBody);
+            failIfOcrFailed();
 
             async function createSummaryReview(body) {
               await github.rest.pulls.createReview({
@@ -933,6 +946,12 @@ jobs:
                 body,
                 event: "COMMENT",
               });
+            }
+
+            function failIfOcrFailed() {
+              if (ocrExitCode !== 0) {
+                core.setFailed(`OpenCodeReview exited with status ${ocrExitCode}.`);
+              }
             }
 
             function collectComments(value) {
@@ -988,6 +1007,21 @@ jobs:
               for (const { comment, reason } of summaryComments) {
                 body += "\n\n---\n\n";
                 body += formatCommentMarkdown(comment, reason ? `Shown in summary because of ${reason}.` : "");
+              }
+              return body;
+            }
+
+            function formatFailedInlineComments(failedComments) {
+              if (failedComments.length === 0) return "";
+              const maxSummaryFailures = 10;
+              let body = "\n\n---\n\n### Inline comments shown in summary";
+              const shown = failedComments.slice(0, maxSummaryFailures);
+              for (const { comment, error } of shown) {
+                body += "\n\n---\n\n";
+                body += formatCommentMarkdown(comment, `GitHub could not post this inline: ${error}`);
+              }
+              if (failedComments.length > maxSummaryFailures) {
+                body += `\n\n...and ${failedComments.length - maxSummaryFailures} more inline comment(s).`;
               }
               return body;
             }
