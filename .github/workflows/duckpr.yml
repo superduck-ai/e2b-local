@@ -1,4 +1,4 @@
-name: Pullfrog PR Review
+name: DuckPR Review
 
 on:
   workflow_dispatch:
