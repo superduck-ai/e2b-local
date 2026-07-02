@@ -143,6 +143,7 @@ jobs:
           ocr config set llm.model "${ocr_model}"
           ocr config set llm.use_anthropic true
           ocr config set llm.extra_body '{"thinking":{"type":"disabled"}}'
+          ocr config set language Chinese
 
           echo "opencodereview_url=${ocr_url}"
           echo "opencodereview_model=${ocr_model}"
@@ -260,7 +261,7 @@ jobs:
             } catch (error) {
               const stderrBytes = Buffer.byteLength(readIfExists(stderrPath), "utf8");
               await createSummaryReview(
-                `**OpenCodeReview** could not parse review output. stderr_bytes=${stderrBytes}. ${String(error.message || error)}`
+                `**OpenCodeReview** 无法解析审阅输出。stderr_bytes=${stderrBytes}. ${String(error.message || error)}`
               );
               failIfOcrFailed();
               return;
@@ -270,7 +271,7 @@ jobs:
             const warnings = collectWarnings(result);
 
             if (comments.length === 0) {
-              const message = result.message || result.summary || "No comments generated.";
+              const message = result.message || result.summary || "没有生成审阅意见。";
               await createSummaryReview(`**OpenCodeReview**: ${message}${formatWarnings(warnings)}`);
               failIfOcrFailed();
               return;
@@ -286,7 +287,7 @@ jobs:
               const hasValidLine = Number.isInteger(line) && line >= 1;
 
               if (!hasPath || !hasValidLine) {
-                summaryComments.push({ comment, body, reason: !hasPath ? "missing path" : "missing line" });
+                summaryComments.push({ comment, body, reason: !hasPath ? "缺少文件路径" : "缺少行号" });
                 continue;
               }
 
@@ -422,14 +423,14 @@ jobs:
 
             function prependReviewIdentityHeader(body) {
               const reviewBody = String(body || "");
-              if (/^\s*\*\*DuckPR reviewer:\*\*/.test(reviewBody)) return reviewBody;
+              if (/^\s*\*\*DuckPR (?:reviewer|审阅器):\*\*/.test(reviewBody)) return reviewBody;
               return buildReviewIdentityHeader() + reviewBody;
             }
 
             function buildReviewIdentityHeader() {
               return (
-                `**DuckPR reviewer:** ${inlineCode(reviewIdentity.agentId)}\n` +
-                `**Model:** ${inlineCode(reviewIdentity.model)}\n\n`
+                `**DuckPR 审阅器:** ${inlineCode(reviewIdentity.agentId)}\n` +
+                `**模型:** ${inlineCode(reviewIdentity.model)}\n\n`
               );
             }
 
@@ -485,14 +486,14 @@ jobs:
               const maxShown = parseNonNegativeInt(process.env.OCR_MAX_SUMMARY_WARNINGS, 0);
               const shown = warnings.slice(0, maxShown);
               const hiddenCount = warnings.length - shown.length;
-              let body = `\n\nWarnings: ${warnings.length} warning(s) reported by OpenCodeReview.`;
+              let body = `\n\nOpenCodeReview 报告了 ${warnings.length} 条警告。`;
               if (shown.length > 0) {
                 body += `\n${shown.map((warning) => `- ${warning}`).join("\n")}`;
               }
               if (hiddenCount > 0) {
                 body += shown.length > 0
-                  ? `\n- ...and ${hiddenCount} more warning(s) hidden from this PR summary.`
-                  : " Details hidden from this PR summary.";
+                  ? `\n- 另有 ${hiddenCount} 条警告已从此 PR 摘要中隐藏。`
+                  : " 详情已从此 PR 摘要中隐藏。";
               }
               return body;
             }
@@ -532,9 +533,9 @@ jobs:
             }
 
             function buildSummaryBody(totalCount, inlineCount, summaryCount, warnings) {
-              let body = `**OpenCodeReview** found **${totalCount}** issue(s) in this PR.`;
-              body += `\n- ${inlineCount} posted as inline comment(s)`;
-              body += `\n- ${summaryCount} shown in this summary`;
+              let body = `**OpenCodeReview** 在这个 PR 中发现 **${totalCount}** 个问题。`;
+              body += `\n- ${inlineCount} 条已作为行内评论发布`;
+              body += `\n- ${summaryCount} 条显示在此摘要中`;
               body += formatWarnings(warnings);
               return body;
             }
@@ -543,7 +544,7 @@ jobs:
               let body = "";
               for (const { comment, reason } of summaryComments) {
                 body += "\n\n---\n\n";
-                body += formatCommentMarkdown(comment, reason ? `Shown in summary because of ${reason}.` : "");
+                body += formatCommentMarkdown(comment, reason ? `由于${reason}，此评论显示在摘要中。` : "");
               }
               return body;
             }
@@ -551,14 +552,14 @@ jobs:
             function formatFailedInlineComments(failedComments) {
               if (failedComments.length === 0) return "";
               const maxSummaryFailures = 10;
-              let body = "\n\n---\n\n### Inline comments shown in summary";
+              let body = "\n\n---\n\n### 无法发布为行内评论的审阅意见";
               const shown = failedComments.slice(0, maxSummaryFailures);
               for (const { comment, error } of shown) {
                 body += "\n\n---\n\n";
-                body += formatCommentMarkdown(comment, `GitHub could not post this inline: ${error}`);
+                body += formatCommentMarkdown(comment, `GitHub 无法发布这条行内评论：${error}`);
               }
               if (failedComments.length > maxSummaryFailures) {
-                body += `\n\n...and ${failedComments.length - maxSummaryFailures} more inline comment(s).`;
+                body += `\n\n另有 ${failedComments.length - maxSummaryFailures} 条行内评论。`;
               }
               return body;
             }
@@ -566,14 +567,14 @@ jobs:
             function formatComment(comment) {
               let body = comment.content || "";
               if (comment.suggestion_code && comment.existing_code) {
-                body += "\n\n**Suggestion:**\n";
+                body += "\n\n**建议修改:**\n";
                 body += fencedBlock(comment.suggestion_code, "suggestion");
               }
               return body || String(comment.suggestion_code || "");
             }
 
             function formatCommentMarkdown(comment, note) {
-              let md = `### \`${comment.path || "unknown path"}\``;
+              let md = `### \`${comment.path || "未知路径"}\``;
               if (lineNumber(comment.start_line) && lineNumber(comment.end_line)) {
                 md += ` (L${comment.start_line}-L${comment.end_line})`;
               }
@@ -582,9 +583,9 @@ jobs:
               md += comment.content || "";
 
               if (comment.suggestion_code && comment.existing_code) {
-                md += "\n\n<details><summary>Suggested change</summary>\n\n";
-                md += "**Before:**\n" + fencedBlock(comment.existing_code) + "\n\n";
-                md += "**After:**\n" + fencedBlock(comment.suggestion_code) + "\n\n";
+                md += "\n\n<details><summary>建议修改</summary>\n\n";
+                md += "**修改前:**\n" + fencedBlock(comment.existing_code) + "\n\n";
+                md += "**修改后:**\n" + fencedBlock(comment.suggestion_code) + "\n\n";
                 md += "</details>";
               }
 
