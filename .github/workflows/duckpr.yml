@@ -227,6 +227,7 @@ jobs:
           OCR_FAILURE_DELAY: ${{ vars.OCR_FAILURE_DELAY }}
           OCR_LOW_REMAINING_THRESHOLD: ${{ vars.OCR_LOW_REMAINING_THRESHOLD }}
           OCR_LOW_REMAINING_SPACING: ${{ vars.OCR_LOW_REMAINING_SPACING }}
+          OCR_MAX_SUMMARY_WARNINGS: ${{ vars.OCR_MAX_SUMMARY_WARNINGS }}
           OCR_REVIEWER: ${{ matrix.reviewer }}
           OCR_MODEL: ${{ inputs.model }}
         with:
@@ -476,12 +477,58 @@ jobs:
             function collectWarnings(value) {
               const warnings = value?.warnings;
               if (!Array.isArray(warnings)) return [];
-              return warnings.map((warning) => String(warning)).filter(Boolean);
+              return warnings.map(formatWarning).filter(Boolean);
             }
 
             function formatWarnings(warnings) {
               if (warnings.length === 0) return "";
-              return `\n\nWarnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}`;
+              const maxShown = parseNonNegativeInt(process.env.OCR_MAX_SUMMARY_WARNINGS, 0);
+              const shown = warnings.slice(0, maxShown);
+              const hiddenCount = warnings.length - shown.length;
+              let body = `\n\nWarnings: ${warnings.length} warning(s) reported by OpenCodeReview.`;
+              if (shown.length > 0) {
+                body += `\n${shown.map((warning) => `- ${warning}`).join("\n")}`;
+              }
+              if (hiddenCount > 0) {
+                body += shown.length > 0
+                  ? `\n- ...and ${hiddenCount} more warning(s) hidden from this PR summary.`
+                  : " Details hidden from this PR summary.";
+              }
+              return body;
+            }
+
+            function formatWarning(warning) {
+              if (warning == null) return "";
+              if (typeof warning === "string") return compactText(warning);
+              if (typeof warning === "number" || typeof warning === "boolean") return String(warning);
+              if (typeof warning !== "object") return compactText(String(warning));
+
+              const type = warningField(warning.type ?? warning.kind ?? warning.level) || "warning";
+              const file = warningField(warning.file ?? warning.path ?? warning.filename);
+              const message = warningField(
+                warning.message ?? warning.error ?? warning.reason ?? warning.detail ?? warning.details
+              );
+
+              if (message) {
+                return compactText(`${type ? `[${type}] ` : ""}${file ? `${inlineCode(file)}: ` : ""}${message}`);
+              }
+
+              try {
+                return compactText(JSON.stringify(warning));
+              } catch {
+                return compactText(String(warning));
+              }
+            }
+
+            function warningField(value) {
+              if (value == null) return "";
+              if (typeof value === "string") return value.trim();
+              if (typeof value === "number" || typeof value === "boolean") return String(value);
+              try {
+                return JSON.stringify(value);
+              } catch {
+                return String(value);
+              }
             }
 
             function buildSummaryBody(totalCount, inlineCount, summaryCount, warnings) {
@@ -547,6 +594,16 @@ jobs:
             function lineNumber(value) {
               const parsed = Number(value);
               return Number.isInteger(parsed) && parsed >= 1 ? parsed : undefined;
+            }
+
+            function parseNonNegativeInt(value, fallback) {
+              const parsed = Number(value);
+              return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+            }
+
+            function compactText(value, maxLength = 300) {
+              const text = String(value || "").replace(/\s+/g, " ").trim();
+              return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
             }
 
             function readIfExists(path) {
