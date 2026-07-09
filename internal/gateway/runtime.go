@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"time"
@@ -87,9 +88,38 @@ type VolumeRuntime interface {
 	DeleteVolume(ctx context.Context, volumeID string) (bool, error)
 }
 
+type VolumeContentRuntime interface {
+	GetVolumePathInfo(ctx context.Context, volumeID string, path string) (VolumeEntryStat, error)
+	ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error)
+	WriteVolumeFile(ctx context.Context, volumeID string, path string, body io.Reader, opts VolumeWriteOptions) (VolumeEntryStat, error)
+	ListVolumeDir(ctx context.Context, volumeID string, path string, depth int) ([]VolumeEntryStat, error)
+	CreateVolumeDir(ctx context.Context, volumeID string, path string, opts VolumeWriteOptions) (VolumeEntryStat, error)
+}
+
 type RuntimeVolume struct {
 	VolumeID string
 	Name     string
+}
+
+type VolumeEntryStat struct {
+	Atime  time.Time `json:"atime"`
+	Mtime  time.Time `json:"mtime"`
+	Ctime  time.Time `json:"ctime"`
+	Type   string    `json:"type"`
+	Name   string    `json:"name"`
+	Path   string    `json:"path"`
+	Size   int64     `json:"size"`
+	UID    int       `json:"uid"`
+	GID    int       `json:"gid"`
+	Mode   int       `json:"mode"`
+	Target string    `json:"target,omitempty"`
+}
+
+type VolumeWriteOptions struct {
+	Force bool
+	Mode  *int
+	UID   *int
+	GID   *int
 }
 
 type SandboxRuntimeFactory func(cfg Config, logger *log.Logger) (SandboxRuntime, error)

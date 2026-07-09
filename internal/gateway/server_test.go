@@ -23,6 +23,7 @@ import (
 	"e2b-local/internal/e2bapi"
 
 	"github.com/docker/docker/errdefs"
+	sdkvolume "github.com/superduck-ai/e2b-go-sdk/volume"
 )
 
 func newTestApp(t *testing.T, cfg Config) http.Handler {
@@ -2077,6 +2078,139 @@ func TestVolumeEndpointsUseRuntime(t *testing.T) {
 	}
 }
 
+func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
+	runtime := &recordingRuntime{}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	runtime.volumes = append(runtime.volumes, RuntimeVolume{VolumeID: "test-volume", Name: "test-volume"})
+
+	putReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=manifest.json&force=true&mode=420", strings.NewReader(`{"skills":[]}`))
+	putRec := httptest.NewRecorder()
+	app.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("expected put file status %d, got %d: %s", http.StatusOK, putRec.Code, putRec.Body.String())
+	}
+
+	var putStat VolumeEntryStat
+	if err := json.Unmarshal(putRec.Body.Bytes(), &putStat); err != nil {
+		t.Fatalf("decode put stat: %v", err)
+	}
+	if putStat.Type != "file" || putStat.Path != "/manifest.json" || putStat.Mode != 420 {
+		t.Fatalf("unexpected put stat: %#v", putStat)
+	}
+
+	pathReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=/manifest.json", nil)
+	pathRec := httptest.NewRecorder()
+	app.ServeHTTP(pathRec, pathReq)
+	if pathRec.Code != http.StatusOK {
+		t.Fatalf("expected path status %d, got %d: %s", http.StatusOK, pathRec.Code, pathRec.Body.String())
+	}
+
+	var pathStat VolumeEntryStat
+	if err := json.Unmarshal(pathRec.Body.Bytes(), &pathStat); err != nil {
+		t.Fatalf("decode path stat: %v", err)
+	}
+	if pathStat.Path != "/manifest.json" || pathStat.Size != int64(len(`{"skills":[]}`)) {
+		t.Fatalf("unexpected path stat: %#v", pathStat)
+	}
+
+	fileReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=manifest.json", nil)
+	fileRec := httptest.NewRecorder()
+	app.ServeHTTP(fileRec, fileReq)
+	if fileRec.Code != http.StatusOK {
+		t.Fatalf("expected file status %d, got %d: %s", http.StatusOK, fileRec.Code, fileRec.Body.String())
+	}
+	if fileRec.Body.String() != `{"skills":[]}` {
+		t.Fatalf("unexpected file body %q", fileRec.Body.String())
+	}
+
+	dirReq := httptest.NewRequest(http.MethodPost, "/volumecontent/test-volume/dir?path=nested&mode=493", nil)
+	dirRec := httptest.NewRecorder()
+	app.ServeHTTP(dirRec, dirReq)
+	if dirRec.Code != http.StatusOK {
+		t.Fatalf("expected dir create status %d, got %d: %s", http.StatusOK, dirRec.Code, dirRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=1", nil)
+	listRec := httptest.NewRecorder()
+	app.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected dir list status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+	var entries []VolumeEntryStat
+	if err := json.Unmarshal(listRec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode dir entries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected file and directory entries, got %#v", entries)
+	}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=missing.json", nil)
+	missingRec := httptest.NewRecorder()
+	app.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing path status %d, got %d: %s", http.StatusNotFound, missingRec.Code, missingRec.Body.String())
+	}
+
+	invalidReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=manifest.json&force=not-bool", strings.NewReader("x"))
+	invalidRec := httptest.NewRecorder()
+	app.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid force status %d, got %d: %s", http.StatusBadRequest, invalidRec.Code, invalidRec.Body.String())
+	}
+}
+
+func TestGoSDKVolumeContentFlow(t *testing.T) {
+	runtime := &recordingRuntime{}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	server := httptest.NewServer(app)
+	defer server.Close()
+
+	ctx := context.Background()
+	vol, err := sdkvolume.Create(ctx, "sdk-volume", &sdkvolume.ConnectionOpts{
+		ApiKey: "e2b_0000000000000000000000000000000000000000",
+		ApiUrl: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("sdk create volume: %v", err)
+	}
+
+	force := true
+	if _, err := vol.WriteFile(ctx, "manifest.json", `{"skills":[]}`, &sdkvolume.VolumeWriteOptions{Force: &force}); err != nil {
+		t.Fatalf("sdk write file: %v", err)
+	}
+
+	readValue, err := vol.ReadFile(ctx, "/manifest.json", nil)
+	if err != nil {
+		t.Fatalf("sdk read file: %v", err)
+	}
+	if readValue != `{"skills":[]}` {
+		t.Fatalf("unexpected sdk read value %#v", readValue)
+	}
+
+	exists, err := vol.Exists(ctx, "manifest.json", nil)
+	if err != nil {
+		t.Fatalf("sdk exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected manifest.json to exist")
+	}
+
+	exists, err = vol.Exists(ctx, "missing.json", nil)
+	if err != nil {
+		t.Fatalf("sdk missing exists: %v", err)
+	}
+	if exists {
+		t.Fatal("expected missing.json not to exist")
+	}
+}
+
 func TestDockerImageReferenceRequiresTagOrDigest(t *testing.T) {
 	tests := []struct {
 		ref  string
@@ -2331,6 +2465,8 @@ type recordingRuntime struct {
 	snapshots           []e2bapi.SnapshotInfo
 	templates           []SandboxRuntimeTemplate
 	volumes             []RuntimeVolume
+	volumeFiles         map[string]recordingVolumeContentEntry
+	volumeDirs          map[string]recordingVolumeContentEntry
 	createRuntimeInfo   SandboxRuntimeInfo
 	deletedVolumeIDs    []string
 	inspectCalls        []SandboxRuntimeInfo
@@ -2360,6 +2496,11 @@ type recordingTemplateBuilderRuntime struct {
 type recordingSnapshotCreateCall struct {
 	Record  SandboxRecord
 	Request e2bapi.PostSandboxesSandboxIDSnapshotsJSONBody
+}
+
+type recordingVolumeContentEntry struct {
+	stat VolumeEntryStat
+	data []byte
 }
 
 func (r *recordingRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCreateRequest) (SandboxRuntimeInfo, error) {
@@ -2528,6 +2669,144 @@ func (r *recordingRuntime) DeleteVolume(ctx context.Context, volumeID string) (b
 		}
 	}
 	return false, nil
+}
+
+func (r *recordingRuntime) GetVolumePathInfo(ctx context.Context, volumeID string, path string) (VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return VolumeEntryStat{}, err
+	}
+	key := recordingVolumeContentKey(volumeID, path)
+	if key == recordingVolumeContentKey(volumeID, "") {
+		return recordingVolumeContentStat("", "directory", 0, 0o755), nil
+	}
+	if entry, ok := r.volumeFiles[key]; ok {
+		return entry.stat, nil
+	}
+	if entry, ok := r.volumeDirs[key]; ok {
+		return entry.stat, nil
+	}
+	return VolumeEntryStat{}, errdefs.NotFound(errors.New("volume path not found"))
+}
+
+func (r *recordingRuntime) ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return nil, err
+	}
+	entry, ok := r.volumeFiles[recordingVolumeContentKey(volumeID, path)]
+	if !ok {
+		return nil, errdefs.NotFound(errors.New("volume file not found"))
+	}
+	return io.NopCloser(bytes.NewReader(entry.data)), nil
+}
+
+func (r *recordingRuntime) WriteVolumeFile(ctx context.Context, volumeID string, path string, body io.Reader, opts VolumeWriteOptions) (VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return VolumeEntryStat{}, err
+	}
+	if r.volumeFiles == nil {
+		r.volumeFiles = map[string]recordingVolumeContentEntry{}
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return VolumeEntryStat{}, err
+	}
+	mode := 0o644
+	if opts.Mode != nil {
+		mode = *opts.Mode
+	}
+	stat := recordingVolumeContentStat(path, "file", int64(len(data)), mode)
+	r.volumeFiles[recordingVolumeContentKey(volumeID, path)] = recordingVolumeContentEntry{stat: stat, data: data}
+	return stat, nil
+}
+
+func (r *recordingRuntime) ListVolumeDir(ctx context.Context, volumeID string, path string, depth int) ([]VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return nil, err
+	}
+	prefix := recordingVolumeContentPath(path)
+	var entries []VolumeEntryStat
+	for key, entry := range r.volumeFiles {
+		entryVolumeID, entryPath := recordingVolumeContentKeyParts(key)
+		if entryVolumeID == volumeID && recordingVolumeContentParentMatches(prefix, entryPath) {
+			entries = append(entries, entry.stat)
+		}
+	}
+	for key, entry := range r.volumeDirs {
+		entryVolumeID, entryPath := recordingVolumeContentKeyParts(key)
+		if entryVolumeID == volumeID && recordingVolumeContentParentMatches(prefix, entryPath) {
+			entries = append(entries, entry.stat)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Path < entries[j].Path
+	})
+	return entries, nil
+}
+
+func (r *recordingRuntime) CreateVolumeDir(ctx context.Context, volumeID string, path string, opts VolumeWriteOptions) (VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return VolumeEntryStat{}, err
+	}
+	if r.volumeDirs == nil {
+		r.volumeDirs = map[string]recordingVolumeContentEntry{}
+	}
+	mode := 0o755
+	if opts.Mode != nil {
+		mode = *opts.Mode
+	}
+	stat := recordingVolumeContentStat(path, "directory", 0, mode)
+	r.volumeDirs[recordingVolumeContentKey(volumeID, path)] = recordingVolumeContentEntry{stat: stat}
+	return stat, nil
+}
+
+func recordingVolumeContentKey(volumeID string, path string) string {
+	return volumeID + "\x00" + recordingVolumeContentPath(path)
+}
+
+func recordingVolumeContentKeyParts(key string) (string, string) {
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+func recordingVolumeContentPath(path string) string {
+	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	return path
+}
+
+func recordingVolumeContentParentMatches(parent string, child string) bool {
+	if parent == "" {
+		return !strings.Contains(child, "/")
+	}
+	if !strings.HasPrefix(child, parent+"/") {
+		return false
+	}
+	return !strings.Contains(strings.TrimPrefix(child, parent+"/"), "/")
+}
+
+func recordingVolumeContentStat(path string, entryType string, size int64, mode int) VolumeEntryStat {
+	cleanPath := recordingVolumeContentPath(path)
+	name := cleanPath
+	if name == "" {
+		name = "/"
+	} else if index := strings.LastIndex(name, "/"); index >= 0 {
+		name = name[index+1:]
+	}
+	now := time.Now().UTC()
+	return VolumeEntryStat{
+		Atime: now,
+		Mtime: now,
+		Ctime: now,
+		Type:  entryType,
+		Name:  name,
+		Path:  "/" + cleanPath,
+		Size:  size,
+		Mode:  mode,
+	}
 }
 
 func waitForSignal(t *testing.T, ch <-chan struct{}, name string) {

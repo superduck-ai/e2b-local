@@ -227,6 +227,25 @@ func TestGoSDKGatewayVolumeLifecycle(t *testing.T) {
 		t.Fatalf("unexpected volume info: %#v", info)
 	}
 
+	force := true
+	if _, err := volume.WriteFile(ctx, "manifest.json", `{"skills":["emoji"]}`, &e2b.VolumeWriteOptions{Force: &force}); err != nil {
+		t.Fatalf("write volume file with Go SDK: %v", err)
+	}
+	readValue, err := volume.ReadFile(ctx, "/manifest.json", nil)
+	if err != nil {
+		t.Fatalf("read volume file with Go SDK: %v", err)
+	}
+	if readValue != `{"skills":["emoji"]}` {
+		t.Fatalf("unexpected volume file content: %#v", readValue)
+	}
+	exists, err := volume.Exists(ctx, "manifest.json", nil)
+	if err != nil {
+		t.Fatalf("check volume file existence with Go SDK: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected manifest.json to exist in volume")
+	}
+
 	firstSandbox, err := e2b.Create(ctx, templateID, &e2b.SandboxOpts{
 		VolumeMounts: map[string]any{
 			"/mnt/data": volume,
@@ -235,22 +254,33 @@ func TestGoSDKGatewayVolumeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first mounted sandbox: %v", err)
 	}
+	firstSandboxKilled := false
+	t.Cleanup(func() {
+		if !firstSandboxKilled {
+			_ = firstSandbox.Kill(context.Background(), nil)
+		}
+	})
 
-	writeExecution, err := firstSandbox.Commands.Run(ctx, `set -eu; printf go-sdk-volume-ok > /mnt/data/persist.txt; cat /mnt/data/persist.txt`, nil)
+	preloadedOutput, err := dockerExecOutput(t, cfg, ctx, cfg.Docker.ContainerNamePrefix+firstSandbox.SandboxID, []string{"cat", "/mnt/data/manifest.json"})
+	if err != nil {
+		t.Fatalf("read preloaded mounted volume file: %v", err)
+	}
+	if !strings.Contains(preloadedOutput, `{"skills":["emoji"]}`) {
+		t.Fatalf("unexpected preloaded file output: %q", preloadedOutput)
+	}
+
+	writeOutput, err := dockerExecOutput(t, cfg, ctx, cfg.Docker.ContainerNamePrefix+firstSandbox.SandboxID, []string{"/bin/sh", "-lc", `set -eu; printf go-sdk-volume-ok > /mnt/data/persist.txt; cat /mnt/data/persist.txt`})
 	if err != nil {
 		t.Fatalf("write mounted volume file: %v", err)
 	}
-	writeResult, ok := writeExecution.(*e2b.CommandResult)
-	if !ok {
-		t.Fatalf("expected *e2b.CommandResult, got %T", writeExecution)
-	}
-	if writeResult.ExitCode != 0 || !strings.Contains(writeResult.Stdout, "go-sdk-volume-ok") {
-		t.Fatalf("unexpected write result: %#v", writeResult)
+	if !strings.Contains(writeOutput, "go-sdk-volume-ok") {
+		t.Fatalf("unexpected write output: %q", writeOutput)
 	}
 
 	if err := firstSandbox.Kill(ctx, nil); err != nil {
 		t.Fatalf("kill first mounted sandbox: %v", err)
 	}
+	firstSandboxKilled = true
 
 	secondSandbox, err := e2b.Create(ctx, templateID, &e2b.SandboxOpts{
 		VolumeMounts: map[string]any{
@@ -266,16 +296,12 @@ func TestGoSDKGatewayVolumeLifecycle(t *testing.T) {
 		}
 	}()
 
-	readExecution, err := secondSandbox.Commands.Run(ctx, `cat /mnt/data/persist.txt`, nil)
+	readOutput, err := dockerExecOutput(t, cfg, ctx, cfg.Docker.ContainerNamePrefix+secondSandbox.SandboxID, []string{"cat", "/mnt/data/persist.txt"})
 	if err != nil {
 		t.Fatalf("read mounted volume file: %v", err)
 	}
-	readResult, ok := readExecution.(*e2b.CommandResult)
-	if !ok {
-		t.Fatalf("expected *e2b.CommandResult, got %T", readExecution)
-	}
-	if readResult.ExitCode != 0 || !strings.Contains(readResult.Stdout, "go-sdk-volume-ok") {
-		t.Fatalf("unexpected read result: %#v", readResult)
+	if !strings.Contains(readOutput, "go-sdk-volume-ok") {
+		t.Fatalf("unexpected read output: %q", readOutput)
 	}
 }
 

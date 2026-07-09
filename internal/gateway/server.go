@@ -101,6 +101,11 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 		app.GetTemplates(c, e2bapi.GetTemplatesParams{TeamID: teamID})
 	})
 	router.GET("/sandboxes/:sandboxID/ports/:port", app.handleGetSandboxPort)
+	router.GET("/volumecontent/:volumeID/path", app.handleVolumeContentPathGet)
+	router.GET("/volumecontent/:volumeID/file", app.handleVolumeContentFileGet)
+	router.PUT("/volumecontent/:volumeID/file", app.handleVolumeContentFilePut)
+	router.GET("/volumecontent/:volumeID/dir", app.handleVolumeContentDirGet)
+	router.POST("/volumecontent/:volumeID/dir", app.handleVolumeContentDirPost)
 	router.PUT("/_e2b/template-files/:templateID/:hash", app.handleTemplateFileUpload)
 	router.NoRoute(app.handleNoRoute)
 

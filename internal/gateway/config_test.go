@@ -30,6 +30,9 @@ func TestLoadConfigEmptyPathUsesDefaults(t *testing.T) {
 	if cfg.Docker.EnvdBinary != "" {
 		t.Fatalf("expected docker envd binary default to be empty, got %q", cfg.Docker.EnvdBinary)
 	}
+	if cfg.Docker.VolumeHostPath == "" || !filepath.IsAbs(cfg.Docker.VolumeHostPath) {
+		t.Fatalf("expected docker volume host path default to be absolute, got %q", cfg.Docker.VolumeHostPath)
+	}
 	if cfg.TemplateBuilds.MaxConcurrent != defaultTemplateBuildMaxConcurrent {
 		t.Fatalf("expected template build concurrency default %d, got %d", defaultTemplateBuildMaxConcurrent, cfg.TemplateBuilds.MaxConcurrent)
 	}
@@ -98,6 +101,7 @@ docker:
   published_ports: [5000, 5001]
   published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
+  volume_host_path: "/tmp/e2b-docker-volumes"
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write test config: %v", err)
@@ -133,6 +137,9 @@ docker:
 	}
 	if cfg.Docker.PublishedHostIP != "0.0.0.0" {
 		t.Fatalf("expected docker published host IP, got %q", cfg.Docker.PublishedHostIP)
+	}
+	if cfg.Docker.VolumeHostPath != "/tmp/e2b-docker-volumes" {
+		t.Fatalf("expected docker volume host path, got %q", cfg.Docker.VolumeHostPath)
 	}
 }
 
@@ -190,6 +197,20 @@ docker:
 	}
 }
 
+func TestDockerRuntimeConfigValidateRequiresAbsoluteVolumeHostPath(t *testing.T) {
+	cfg := DefaultConfig().Docker
+	cfg.VolumeHostPath = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing docker volume host path to fail")
+	}
+
+	cfg = DefaultConfig().Docker
+	cfg.VolumeHostPath = "relative-volumes"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected relative docker volume host path to fail")
+	}
+}
+
 func TestLoadConfigReadsTemplateBuildLimits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`
@@ -220,6 +241,7 @@ runtime:
 docker:
   host: "unix:///var/run/docker.sock"
   envd_binary: "envd-bin/envd-linux-amd64"
+  volume_host_path: "docker-volumes"
 
 orbstack:
   envd_binary: "envd-bin/envd-linux-arm64"
@@ -236,6 +258,9 @@ orbstack:
 
 	if want := filepath.Join(dir, "envd-bin", "envd-linux-amd64"); cfg.Docker.EnvdBinary != want {
 		t.Fatalf("expected docker envd path %q, got %q", want, cfg.Docker.EnvdBinary)
+	}
+	if want := filepath.Join(dir, "docker-volumes"); cfg.Docker.VolumeHostPath != want {
+		t.Fatalf("expected docker volume path %q, got %q", want, cfg.Docker.VolumeHostPath)
 	}
 	if want := filepath.Join(dir, "envd-bin", "envd-linux-arm64"); cfg.Orbstack.EnvdBinary != want {
 		t.Fatalf("expected orbstack envd path %q, got %q", want, cfg.Orbstack.EnvdBinary)

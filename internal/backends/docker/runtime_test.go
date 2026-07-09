@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	gateway "e2b-local/internal/gateway"
 
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -86,6 +89,298 @@ func TestDockerPublishedPortsFromBindingsSkipsEnvd(t *testing.T) {
 	}
 	if mappings[0].ContainerPort != 5000 || mappings[0].HostPort != 38123 || mappings[0].Protocol != "tcp" {
 		t.Fatalf("unexpected published port mapping: %#v", mappings[0])
+	}
+}
+
+func TestDockerRuntimeLocalVolumeLifecycleUsesManagedDirectories(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	unmanagedDir := filepath.Join(cfg.VolumeHostPath, "unmanaged")
+	if err := os.MkdirAll(unmanagedDir, 0o755); err != nil {
+		t.Fatalf("create unmanaged dir: %v", err)
+	}
+	linkedDir := filepath.Join(cfg.VolumeHostPath, "linked")
+	linkedTarget := filepath.Join(t.TempDir(), "linked-target")
+	if err := os.MkdirAll(linkedTarget, 0o755); err != nil {
+		t.Fatalf("create linked target: %v", err)
+	}
+	if err := writeDockerLocalVolumeMetadata(linkedTarget, dockerLocalVolumeMetadata{
+		VolumeID:  "linked",
+		Name:      "linked",
+		Managed:   true,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("write linked target marker: %v", err)
+	}
+	symlinkSupported := os.Symlink(linkedTarget, linkedDir) == nil
+
+	created, err := runtime.CreateVolume(context.Background(), "managed")
+	if err != nil {
+		t.Fatalf("create local volume: %v", err)
+	}
+	if created.VolumeID != "managed" || created.Name != "managed" {
+		t.Fatalf("unexpected created volume: %#v", created)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.VolumeHostPath, "managed", dockerLocalVolumeMetadataFile)); err != nil {
+		t.Fatalf("expected managed marker file: %v", err)
+	}
+
+	listed, err := runtime.ListVolumes(context.Background())
+	if err != nil {
+		t.Fatalf("list local volumes: %v", err)
+	}
+	if len(listed) != 1 || listed[0].VolumeID != "managed" {
+		t.Fatalf("expected only managed volume, got %#v", listed)
+	}
+	if symlinkSupported {
+		if _, err := runtime.GetVolume(context.Background(), "linked"); !errdefs.IsNotFound(err) {
+			t.Fatalf("expected symlink volume directory to be ignored, got %v", err)
+		}
+	}
+
+	resolved, err := runtime.GetVolume(context.Background(), "managed")
+	if err != nil {
+		t.Fatalf("get local volume: %v", err)
+	}
+	if resolved.VolumeID != "managed" {
+		t.Fatalf("unexpected resolved volume: %#v", resolved)
+	}
+
+	deleted, err := runtime.DeleteVolume(context.Background(), "unmanaged")
+	if err != nil {
+		t.Fatalf("delete unmanaged volume should not fail: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected unmanaged directory to be ignored")
+	}
+	if _, err := os.Stat(unmanagedDir); err != nil {
+		t.Fatalf("unmanaged directory should remain: %v", err)
+	}
+	if symlinkSupported {
+		deleted, err := runtime.DeleteVolume(context.Background(), "linked")
+		if err != nil {
+			t.Fatalf("delete symlink volume should not fail: %v", err)
+		}
+		if deleted {
+			t.Fatal("expected symlink volume directory to be ignored")
+		}
+		if _, err := os.Lstat(linkedDir); err != nil {
+			t.Fatalf("symlink volume directory should remain: %v", err)
+		}
+	}
+
+	deleted, err = runtime.DeleteVolume(context.Background(), "managed")
+	if err != nil {
+		t.Fatalf("delete managed volume: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected managed volume to be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.VolumeHostPath, "managed")); !os.IsNotExist(err) {
+		t.Fatalf("expected managed directory removed, stat err=%v", err)
+	}
+}
+
+func TestDockerRuntimeMountsUseBindMountsForLocalVolumes(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	if _, err := runtime.CreateVolume(context.Background(), "skills"); err != nil {
+		t.Fatalf("create local volume: %v", err)
+	}
+
+	volumeMounts, dockerMounts, err := runtime.mounts(context.Background(), []VolumeMount{
+		{Name: "skills", Path: "/mnt/skills"},
+	}, "/tmp/envd")
+	if err != nil {
+		t.Fatalf("build mounts: %v", err)
+	}
+	if len(volumeMounts) != 1 || volumeMounts[0].VolumeID != "skills" || volumeMounts[0].Path != "/mnt/skills" {
+		t.Fatalf("unexpected normalized volume mounts: %#v", volumeMounts)
+	}
+	if len(dockerMounts) != 2 {
+		t.Fatalf("expected envd and volume mounts, got %#v", dockerMounts)
+	}
+	volumeMount := dockerMounts[1]
+	if volumeMount.Type != mount.TypeBind {
+		t.Fatalf("expected bind mount, got %#v", volumeMount)
+	}
+	if want := filepath.Join(cfg.VolumeHostPath, "skills"); volumeMount.Source != want {
+		t.Fatalf("expected bind source %q, got %q", want, volumeMount.Source)
+	}
+	if volumeMount.Target != "/mnt/skills" {
+		t.Fatalf("expected bind target /mnt/skills, got %q", volumeMount.Target)
+	}
+}
+
+func TestDockerRuntimeMountsAutoCreateMissingLocalVolumes(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	volumeMounts, dockerMounts, err := runtime.mounts(context.Background(), []VolumeMount{
+		{Name: "user-data", Path: "/mnt/user-data"},
+	}, "/tmp/envd")
+	if err != nil {
+		t.Fatalf("build mounts: %v", err)
+	}
+	if len(volumeMounts) != 1 || volumeMounts[0].VolumeID != "user-data" || volumeMounts[0].Name != "user-data" {
+		t.Fatalf("unexpected normalized volume mounts: %#v", volumeMounts)
+	}
+	if len(dockerMounts) != 2 || dockerMounts[1].Type != mount.TypeBind {
+		t.Fatalf("expected envd plus bind volume mounts, got %#v", dockerMounts)
+	}
+	if want := filepath.Join(cfg.VolumeHostPath, "user-data"); dockerMounts[1].Source != want {
+		t.Fatalf("expected bind source %q, got %q", want, dockerMounts[1].Source)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.VolumeHostPath, "user-data", dockerLocalVolumeMetadataFile)); err != nil {
+		t.Fatalf("expected auto-created managed marker: %v", err)
+	}
+
+	listed, err := runtime.ListVolumes(context.Background())
+	if err != nil {
+		t.Fatalf("list local volumes: %v", err)
+	}
+	if len(listed) != 1 || listed[0].VolumeID != "user-data" {
+		t.Fatalf("expected auto-created user-data in managed list, got %#v", listed)
+	}
+}
+
+func TestDockerRuntimeMountsRejectUnmanagedLocalVolumeDirectory(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	if err := os.MkdirAll(filepath.Join(cfg.VolumeHostPath, "user-data"), 0o755); err != nil {
+		t.Fatalf("create unmanaged user-data dir: %v", err)
+	}
+
+	if _, _, err := runtime.mounts(context.Background(), []VolumeMount{
+		{Name: "user-data", Path: "/mnt/user-data"},
+	}, "/tmp/envd"); err == nil {
+		t.Fatal("expected unmanaged local volume directory to fail")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.VolumeHostPath, "user-data")); err != nil {
+		t.Fatalf("unmanaged directory should remain: %v", err)
+	}
+}
+
+func TestDockerRuntimeVolumeContentReadWriteAndStat(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	volume, err := runtime.CreateVolume(context.Background(), "skills")
+	if err != nil {
+		t.Fatalf("create local volume: %v", err)
+	}
+
+	mode := 0o640
+	written, err := runtime.WriteVolumeFile(context.Background(), volume.VolumeID, "/manifest.json", strings.NewReader(`{"skills":[]}`), gateway.VolumeWriteOptions{
+		Force: true,
+		Mode:  &mode,
+	})
+	if err != nil {
+		t.Fatalf("write volume file: %v", err)
+	}
+	if written.Type != "file" || written.Path != "/manifest.json" || written.Mode != mode {
+		t.Fatalf("unexpected written stat: %#v", written)
+	}
+
+	body, err := runtime.ReadVolumeFile(context.Background(), volume.VolumeID, "manifest.json")
+	if err != nil {
+		t.Fatalf("read volume file: %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if closeErr := body.Close(); closeErr != nil {
+		t.Fatalf("close volume file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read volume body: %v", err)
+	}
+	if string(data) != `{"skills":[]}` {
+		t.Fatalf("unexpected volume file body %q", string(data))
+	}
+
+	stat, err := runtime.GetVolumePathInfo(context.Background(), volume.VolumeID, "manifest.json")
+	if err != nil {
+		t.Fatalf("stat volume file: %v", err)
+	}
+	if stat.Path != "/manifest.json" || stat.Size != int64(len(`{"skills":[]}`)) {
+		t.Fatalf("unexpected stat: %#v", stat)
+	}
+
+	dirStat, err := runtime.CreateVolumeDir(context.Background(), volume.VolumeID, "nested", gateway.VolumeWriteOptions{})
+	if err != nil {
+		t.Fatalf("create volume dir: %v", err)
+	}
+	if dirStat.Type != "directory" || dirStat.Path != "/nested" {
+		t.Fatalf("unexpected dir stat: %#v", dirStat)
+	}
+
+	entries, err := runtime.ListVolumeDir(context.Background(), volume.VolumeID, "/", 1)
+	if err != nil {
+		t.Fatalf("list volume dir: %v", err)
+	}
+	if len(entries) != 2 || entries[0].Path != "/manifest.json" || entries[1].Path != "/nested" {
+		t.Fatalf("unexpected volume dir entries: %#v", entries)
+	}
+
+	if _, err := runtime.GetVolumePathInfo(context.Background(), volume.VolumeID, "missing.json"); !errdefs.IsNotFound(err) {
+		t.Fatalf("expected missing path to be not found, got %v", err)
+	}
+}
+
+func TestDockerRuntimeVolumeContentRejectsUnsafePaths(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	if _, err := runtime.CreateVolume(context.Background(), "skills"); err != nil {
+		t.Fatalf("create local volume: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		path string
+	}{
+		{name: "empty", path: ""},
+		{name: "relative traversal", path: "../x"},
+		{name: "absolute traversal", path: "/../../x"},
+		{name: "nul", path: "a\x00b"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := runtime.WriteVolumeFile(context.Background(), "skills", tt.path, strings.NewReader("x"), gateway.VolumeWriteOptions{Force: true})
+			if err == nil {
+				t.Fatal("expected unsafe path to fail")
+			}
+			if status := gatewayErrorStatus(err, http.StatusInternalServerError); status != http.StatusBadRequest {
+				t.Fatalf("expected bad request for unsafe path, got status %d err %v", status, err)
+			}
+		})
+	}
+
+	outsideDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("create outside dir: %v", err)
+	}
+	escapeLink := filepath.Join(cfg.VolumeHostPath, "skills", "escape")
+	if err := os.Symlink(outsideDir, escapeLink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := runtime.WriteVolumeFile(context.Background(), "skills", "escape/file.txt", strings.NewReader("x"), gateway.VolumeWriteOptions{Force: true})
+	if err == nil {
+		t.Fatal("expected symlink escape write to fail")
+	}
+	if status := gatewayErrorStatus(err, http.StatusInternalServerError); status != http.StatusBadRequest {
+		t.Fatalf("expected bad request for symlink escape, got status %d err %v", status, err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected outside file not to be created, stat err=%v", err)
 	}
 }
 

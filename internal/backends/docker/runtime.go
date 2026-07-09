@@ -28,7 +28,6 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	dockervolume "github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -76,6 +75,7 @@ const (
 	dockerLocalSandboxMetadataLabel       = "e2b.local.sandbox.metadata"
 	dockerLocalSandboxAllowInternetLabel  = "e2b.local.sandbox.allow_internet_access"
 	dockerLocalSandboxVolumeMountsLabel   = "e2b.local.sandbox.volume_mounts"
+	dockerLocalVolumeMetadataFile         = ".e2b-local-volume.json"
 	dockerLocalTemplateLabel              = "e2b.local.template"
 	dockerLocalTemplateIDLabel            = "e2b.local.template_id"
 	dockerLocalTemplateNamesLabel         = "e2b.local.template.names"
@@ -870,99 +870,6 @@ func (r *DockerRuntime) listDockerTemplates(ctx context.Context) (map[string]San
 	}
 
 	return templatesByID, nil
-}
-
-func (r *DockerRuntime) CreateVolume(ctx context.Context, name string) (RuntimeVolume, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return RuntimeVolume{}, fmt.Errorf("volume name is required")
-	}
-
-	volume, err := r.client.VolumeCreate(ctx, dockervolume.CreateOptions{
-		Name: name,
-		Labels: map[string]string{
-			dockerLocalManagedLabel: "true",
-		},
-	})
-	if err != nil {
-		return RuntimeVolume{}, fmt.Errorf("create docker volume %s: %w", name, err)
-	}
-
-	return runtimeVolumeFromDockerVolume(volume), nil
-}
-
-func (r *DockerRuntime) ListVolumes(ctx context.Context) ([]RuntimeVolume, error) {
-	volumes, err := r.client.VolumeList(ctx, dockervolume.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", dockerLocalManagedLabel+"=true")),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list docker volumes: %w", err)
-	}
-
-	result := make([]RuntimeVolume, 0, len(volumes.Volumes))
-	for _, volume := range volumes.Volumes {
-		if volume == nil {
-			continue
-		}
-		result = append(result, runtimeVolumeFromDockerVolume(*volume))
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
-	return result, nil
-}
-
-func (r *DockerRuntime) GetVolume(ctx context.Context, volumeID string) (RuntimeVolume, error) {
-	volumeID = strings.TrimSpace(volumeID)
-	if volumeID == "" {
-		return RuntimeVolume{}, fmt.Errorf("volume id is required")
-	}
-
-	volume, err := r.client.VolumeInspect(ctx, volumeID)
-	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return RuntimeVolume{}, err
-		}
-		return RuntimeVolume{}, fmt.Errorf("inspect docker volume %s: %w", volumeID, err)
-	}
-	return runtimeVolumeFromDockerVolume(volume), nil
-}
-
-func (r *DockerRuntime) DeleteVolume(ctx context.Context, volumeID string) (bool, error) {
-	volumeID = strings.TrimSpace(volumeID)
-	if volumeID == "" {
-		return false, fmt.Errorf("volume id is required")
-	}
-
-	volume, err := r.client.VolumeInspect(ctx, volumeID)
-	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect docker volume %s: %w", volumeID, err)
-	}
-	if !isManagedDockerVolume(volume) {
-		return false, fmt.Errorf("refusing to delete unmanaged docker volume %s", volumeID)
-	}
-
-	if err := r.client.VolumeRemove(ctx, volumeID, false); err != nil {
-		if errdefs.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("remove docker volume %s: %w", volumeID, err)
-	}
-	return true, nil
-}
-
-func runtimeVolumeFromDockerVolume(volume dockervolume.Volume) RuntimeVolume {
-	return RuntimeVolume{
-		VolumeID: volume.Name,
-		Name:     volume.Name,
-	}
-}
-
-func isManagedDockerVolume(volume dockervolume.Volume) bool {
-	return volume.Labels[dockerLocalManagedLabel] == "true"
 }
 
 func isDockerImageReference(ref string) bool {
@@ -1877,19 +1784,18 @@ func (r *DockerRuntime) mounts(ctx context.Context, volumeMounts []VolumeMount, 
 		if !strings.HasPrefix(volumeMount.Path, "/") {
 			return nil, nil, fmt.Errorf("volume mount path must be absolute: %s", volumeMount.Path)
 		}
-		volume, err := r.client.VolumeInspect(ctx, volumeMount.VolumeID)
+		resolved, hostDir, err := r.ensureLocalVolume(volumeMount.VolumeID)
 		if err != nil {
 			if errdefs.IsNotFound(err) {
 				return nil, nil, fmt.Errorf("volume %s not found", volumeMount.VolumeID)
 			}
-			return nil, nil, fmt.Errorf("inspect docker volume %s: %w", volumeMount.VolumeID, err)
+			return nil, nil, err
 		}
-		resolved := runtimeVolumeFromDockerVolume(volume)
 		normalized[index].VolumeID = resolved.VolumeID
 		normalized[index].Name = resolved.Name
 		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeVolume,
-			Source: resolved.VolumeID,
+			Type:   mount.TypeBind,
+			Source: hostDir,
 			Target: volumeMount.Path,
 		})
 	}

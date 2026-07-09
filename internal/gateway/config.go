@@ -77,6 +77,7 @@ type DockerRuntimeConfig struct {
 	PublishedPorts       []int  `yaml:"published_ports"`
 	PublishedHostIP      string `yaml:"published_host_ip"`
 	HealthTimeoutSeconds int    `yaml:"health_timeout_seconds"`
+	VolumeHostPath       string `yaml:"volume_host_path"`
 }
 
 type OrbstackRuntimeConfig struct {
@@ -134,6 +135,7 @@ func DefaultConfig() Config {
 			ContainerNamePrefix:  defaultDockerContainerNamePrefix,
 			PublishedHostIP:      defaultDockerPublishedHostIP,
 			HealthTimeoutSeconds: defaultDockerHealthTimeoutSeconds,
+			VolumeHostPath:       defaultVolumeHostPath(),
 		},
 		Orbstack: OrbstackRuntimeConfig{
 			MachineNamePrefix:    defaultOrbstackMachineNamePrefix,
@@ -176,7 +178,10 @@ func defaultVolumeHostPath() string {
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		return filepath.Join(home, ".e2b-local", "volumes")
 	}
-	return filepath.Join(".e2b-local", "volumes")
+	if abs, err := filepath.Abs(filepath.Join(os.TempDir(), "e2b-local", "volumes")); err == nil {
+		return abs
+	}
+	return filepath.Join(os.TempDir(), "e2b-local", "volumes")
 }
 
 func defaultBundledPath(relPath string) string {
@@ -247,6 +252,7 @@ func (c *Config) ResolveLocalPaths(baseDir string) {
 		return
 	}
 	c.Docker.EnvdBinary = resolveLocalPath(baseDir, c.Docker.EnvdBinary)
+	c.Docker.VolumeHostPath = resolveLocalPath(baseDir, c.Docker.VolumeHostPath)
 	c.Orbstack.EnvdBinary = resolveLocalPath(baseDir, c.Orbstack.EnvdBinary)
 	c.Orbstack.VolumeHostPath = resolveLocalPath(baseDir, c.Orbstack.VolumeHostPath)
 	c.AppleContainer.EnvdBinary = resolveLocalPath(baseDir, c.AppleContainer.EnvdBinary)
@@ -509,6 +515,12 @@ func (c DockerRuntimeConfig) Validate() error {
 
 	if c.HealthTimeoutSeconds <= 0 {
 		return fmt.Errorf("docker.health_timeout_seconds must be positive")
+	}
+	if strings.TrimSpace(c.VolumeHostPath) == "" {
+		return fmt.Errorf("docker.volume_host_path is required")
+	}
+	if !filepath.IsAbs(c.VolumeHostPath) {
+		return fmt.Errorf("docker.volume_host_path must be an absolute path")
 	}
 
 	if strings.TrimSpace(c.PublishedHostIP) == "" {

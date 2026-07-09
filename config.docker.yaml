@@ -52,3 +52,7 @@ docker:
 
   # Time to wait for envd inside the sandbox container to become healthy.
   health_timeout_seconds: 30
+
+  # Local host directory used to back E2B volumes. Each managed volume becomes a
+  # subdirectory here and is bind-mounted into sandbox containers.
+  volume_host_path: "~/.e2b-local/volumes"
