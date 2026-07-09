@@ -28,7 +28,7 @@ func (a *App) handleVolumeContentPathGet(c *gin.Context) {
 	}
 	stat, err := runtime.GetVolumePathInfo(a.callbackContext(c), c.Param("volumeID"), c.Query("path"))
 	if err != nil {
-		writeGatewayError(c, err, http.StatusNotFound)
+		writeGatewayError(c, err, volumeErrorStatus(err))
 		return
 	}
 	c.JSON(http.StatusOK, stat)
@@ -42,12 +42,16 @@ func (a *App) handleVolumeContentFileGet(c *gin.Context) {
 	}
 	body, err := runtime.ReadVolumeFile(a.callbackContext(c), c.Param("volumeID"), c.Query("path"))
 	if err != nil {
-		writeGatewayError(c, err, http.StatusNotFound)
+		writeGatewayError(c, err, volumeErrorStatus(err))
 		return
 	}
 	defer body.Close()
 	c.Header("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(c.Writer, body); err != nil {
+		if c.Writer.Written() {
+			a.logger.Printf("volume content download failed volume_id=%s path=%q error=%v", c.Param("volumeID"), c.Query("path"), err)
+			return
+		}
 		writeGatewayError(c, err, http.StatusInternalServerError)
 		return
 	}
@@ -90,7 +94,7 @@ func (a *App) handleVolumeContentDirGet(c *gin.Context) {
 	}
 	entries, err := runtime.ListVolumeDir(a.callbackContext(c), c.Param("volumeID"), c.Query("path"), depth)
 	if err != nil {
-		writeGatewayError(c, err, http.StatusNotFound)
+		writeGatewayError(c, err, volumeErrorStatus(err))
 		return
 	}
 	c.JSON(http.StatusOK, entries)

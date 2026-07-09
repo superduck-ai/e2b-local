@@ -2217,6 +2217,54 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 	}
 }
 
+func TestVolumeContentGetEndpointsPreserveInternalErrors(t *testing.T) {
+	runtime := &volumeContentErrorRuntime{err: errors.New("volume content failed")}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "path", method: http.MethodGet, path: "/volumecontent/test-volume/path?path=manifest.json"},
+		{name: "file", method: http.MethodGet, path: "/volumecontent/test-volume/file?path=manifest.json"},
+		{name: "dir", method: http.MethodGet, path: "/volumecontent/test-volume/dir?path=/"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusInternalServerError, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestVolumeContentFileGetDoesNotAppendJSONAfterStreamingFailure(t *testing.T) {
+	runtime := &volumeContentErrorRuntime{
+		body: &gatewayFailingReadCloser{data: []byte("partial")},
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=manifest.json", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected committed stream status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "partial" {
+		t.Fatalf("expected only partial file bytes, got %q", rec.Body.String())
+	}
+}
+
 func TestGoSDKVolumeContentFlow(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
@@ -2547,6 +2595,12 @@ type recordingTemplateBuilderRuntime struct {
 	startBuildReturned  chan struct{}
 }
 
+type volumeContentErrorRuntime struct {
+	recordingRuntime
+	err  error
+	body io.ReadCloser
+}
+
 type recordingSnapshotCreateCall struct {
 	Record  SandboxRecord
 	Request e2bapi.PostSandboxesSandboxIDSnapshotsJSONBody
@@ -2742,6 +2796,13 @@ func (r *recordingRuntime) GetVolumePathInfo(ctx context.Context, volumeID strin
 	return VolumeEntryStat{}, errdefs.NotFound(errors.New("volume path not found"))
 }
 
+func (r *volumeContentErrorRuntime) GetVolumePathInfo(ctx context.Context, volumeID string, path string) (VolumeEntryStat, error) {
+	if r.err != nil {
+		return VolumeEntryStat{}, r.err
+	}
+	return r.recordingRuntime.GetVolumePathInfo(ctx, volumeID, path)
+}
+
 func (r *recordingRuntime) ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error) {
 	if _, err := r.GetVolume(ctx, volumeID); err != nil {
 		return nil, err
@@ -2751,6 +2812,16 @@ func (r *recordingRuntime) ReadVolumeFile(ctx context.Context, volumeID string, 
 		return nil, errdefs.NotFound(errors.New("volume file not found"))
 	}
 	return io.NopCloser(bytes.NewReader(entry.data)), nil
+}
+
+func (r *volumeContentErrorRuntime) ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.body != nil {
+		return r.body, nil
+	}
+	return r.recordingRuntime.ReadVolumeFile(ctx, volumeID, path)
 }
 
 func (r *recordingRuntime) WriteVolumeFile(ctx context.Context, volumeID string, path string, body io.Reader, opts VolumeWriteOptions) (VolumeEntryStat, error) {
@@ -2795,6 +2866,13 @@ func (r *recordingRuntime) ListVolumeDir(ctx context.Context, volumeID string, p
 		return entries[i].Path < entries[j].Path
 	})
 	return entries, nil
+}
+
+func (r *volumeContentErrorRuntime) ListVolumeDir(ctx context.Context, volumeID string, path string, depth int) ([]VolumeEntryStat, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.recordingRuntime.ListVolumeDir(ctx, volumeID, path, depth)
 }
 
 func (r *recordingRuntime) CreateVolumeDir(ctx context.Context, volumeID string, path string, opts VolumeWriteOptions) (VolumeEntryStat, error) {
@@ -2861,6 +2939,23 @@ func recordingVolumeContentStat(path string, entryType string, size int64, mode 
 		Size:  size,
 		Mode:  mode,
 	}
+}
+
+type gatewayFailingReadCloser struct {
+	data []byte
+	done bool
+}
+
+func (r *gatewayFailingReadCloser) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, errors.New("stream failed")
+}
+
+func (r *gatewayFailingReadCloser) Close() error {
+	return nil
 }
 
 func waitForSignal(t *testing.T, ch <-chan struct{}, name string) {

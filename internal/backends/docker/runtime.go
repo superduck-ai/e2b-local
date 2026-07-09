@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -139,6 +141,9 @@ func copyStringMap(values map[string]string) map[string]string {
 }
 
 func NewDockerRuntime(cfg DockerRuntimeConfig, logger *log.Logger) (*DockerRuntime, error) {
+	if !dockerHostSupportsLocalBindMounts(cfg.Host) {
+		return nil, fmt.Errorf("docker bind-backed volumes require a local Docker daemon; got docker.host %q", cfg.Host)
+	}
 	cli, err := client.NewClientWithOpts(
 		client.WithHost(cfg.Host),
 		client.WithAPIVersionNegotiation(),
@@ -156,6 +161,34 @@ func NewDockerRuntime(cfg DockerRuntimeConfig, logger *log.Logger) (*DockerRunti
 		client: cli,
 		logger: logger,
 	}, nil
+}
+
+func dockerHostSupportsLocalBindMounts(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return true
+	}
+	if strings.HasPrefix(host, "unix://") || strings.HasPrefix(host, "npipe://") {
+		return true
+	}
+	parsed, err := url.Parse(host)
+	if err != nil {
+		return false
+	}
+	switch parsed.Scheme {
+	case "tcp", "http", "https":
+		name := parsed.Hostname()
+		if name == "" {
+			return false
+		}
+		if strings.EqualFold(name, "localhost") {
+			return true
+		}
+		ip := net.ParseIP(name)
+		return ip != nil && ip.IsLoopback()
+	default:
+		return false
+	}
 }
 
 func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCreateRequest) (SandboxRuntimeInfo, error) {
@@ -439,7 +472,7 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 		info.ContainerName = firstDockerContainerName(summary.Names)
 	}
 	if len(info.VolumeMounts) == 0 {
-		info.VolumeMounts = dockerVolumeMountsFromMountPoints(inspect.Mounts)
+		info.VolumeMounts = r.dockerVolumeMountsFromMountPoints(inspect.Mounts)
 	}
 	if runtimeInfo, err := r.inspectRuntimeInfo(ctx, info); err == nil {
 		info = runtimeInfo
@@ -1293,15 +1326,32 @@ func dockerVolumeMountsFromLabels(labels map[string]string) []VolumeMount {
 	return normalizeVolumeMounts(decoded)
 }
 
-func dockerVolumeMountsFromMountPoints(mounts []dockertypes.MountPoint) []VolumeMount {
+func (r *DockerRuntime) dockerVolumeMountsFromMountPoints(mounts []dockertypes.MountPoint) []VolumeMount {
 	result := make([]VolumeMount, 0, len(mounts))
+	volumeRoot := filepath.Clean(strings.TrimSpace(r.cfg.VolumeHostPath))
 	for _, mountPoint := range mounts {
-		if mountPoint.Type != mount.TypeVolume {
+		path := strings.TrimSpace(mountPoint.Destination)
+		if path == "" {
 			continue
 		}
-		name := strings.TrimSpace(mountPoint.Name)
-		path := strings.TrimSpace(mountPoint.Destination)
-		if name == "" || path == "" {
+		var name string
+		switch mountPoint.Type {
+		case mount.TypeVolume:
+			name = strings.TrimSpace(mountPoint.Name)
+		case mount.TypeBind:
+			source := filepath.Clean(strings.TrimSpace(mountPoint.Source))
+			if volumeRoot == "" {
+				continue
+			}
+			rel, err := filepath.Rel(volumeRoot, source)
+			if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || strings.Contains(rel, string(filepath.Separator)) {
+				continue
+			}
+			name = filepath.Base(source)
+		default:
+			continue
+		}
+		if name == "" {
 			continue
 		}
 		result = append(result, VolumeMount{
