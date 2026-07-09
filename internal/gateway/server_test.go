@@ -2102,6 +2102,34 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 		t.Fatalf("unexpected put stat: %#v", putStat)
 	}
 
+	octalReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=octal.txt&force=true&mode=0640", strings.NewReader("octal"))
+	octalRec := httptest.NewRecorder()
+	app.ServeHTTP(octalRec, octalReq)
+	if octalRec.Code != http.StatusOK {
+		t.Fatalf("expected octal mode put status %d, got %d: %s", http.StatusOK, octalRec.Code, octalRec.Body.String())
+	}
+	var octalStat VolumeEntryStat
+	if err := json.Unmarshal(octalRec.Body.Bytes(), &octalStat); err != nil {
+		t.Fatalf("decode octal put stat: %v", err)
+	}
+	if octalStat.Mode != 0o640 {
+		t.Fatalf("expected octal mode 0640, got %#v", octalStat)
+	}
+
+	humanReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=human.txt&force=true&mode=644", strings.NewReader("human"))
+	humanRec := httptest.NewRecorder()
+	app.ServeHTTP(humanRec, humanReq)
+	if humanRec.Code != http.StatusOK {
+		t.Fatalf("expected human mode put status %d, got %d: %s", http.StatusOK, humanRec.Code, humanRec.Body.String())
+	}
+	var humanStat VolumeEntryStat
+	if err := json.Unmarshal(humanRec.Body.Bytes(), &humanStat); err != nil {
+		t.Fatalf("decode human put stat: %v", err)
+	}
+	if humanStat.Mode != 0o644 {
+		t.Fatalf("expected human mode 0644, got %#v", humanStat)
+	}
+
 	pathReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=/manifest.json", nil)
 	pathRec := httptest.NewRecorder()
 	app.ServeHTTP(pathRec, pathReq)
@@ -2144,8 +2172,8 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 	if err := json.Unmarshal(listRec.Body.Bytes(), &entries); err != nil {
 		t.Fatalf("decode dir entries: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected file and directory entries, got %#v", entries)
+	if len(entries) != 4 {
+		t.Fatalf("expected written files and directory entries, got %#v", entries)
 	}
 
 	missingReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=missing.json", nil)
@@ -2160,6 +2188,32 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 	app.ServeHTTP(invalidRec, invalidReq)
 	if invalidRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid force status %d, got %d: %s", http.StatusBadRequest, invalidRec.Code, invalidRec.Body.String())
+	}
+
+	missingPutReq := httptest.NewRequest(http.MethodPut, "/volumecontent/missing/file?path=manifest.json", strings.NewReader("x"))
+	missingPutRec := httptest.NewRecorder()
+	app.ServeHTTP(missingPutRec, missingPutReq)
+	if missingPutRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing volume put status %d, got %d: %s", http.StatusNotFound, missingPutRec.Code, missingPutRec.Body.String())
+	}
+
+	missingDirReq := httptest.NewRequest(http.MethodPost, "/volumecontent/missing/dir?path=nested", nil)
+	missingDirRec := httptest.NewRecorder()
+	app.ServeHTTP(missingDirRec, missingDirReq)
+	if missingDirRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing volume dir status %d, got %d: %s", http.StatusNotFound, missingDirRec.Code, missingDirRec.Body.String())
+	}
+
+	oldMaxVolumeFileUploadBytes := maxVolumeFileUploadBytes
+	maxVolumeFileUploadBytes = 4
+	t.Cleanup(func() {
+		maxVolumeFileUploadBytes = oldMaxVolumeFileUploadBytes
+	})
+	tooLargeReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=too-large.txt&force=true", strings.NewReader("12345"))
+	tooLargeRec := httptest.NewRecorder()
+	app.ServeHTTP(tooLargeRec, tooLargeReq)
+	if tooLargeRec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected too large upload status %d, got %d: %s", http.StatusRequestEntityTooLarge, tooLargeRec.Code, tooLargeRec.Body.String())
 	}
 }
 

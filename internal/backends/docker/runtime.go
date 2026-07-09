@@ -1786,9 +1786,6 @@ func (r *DockerRuntime) mounts(ctx context.Context, volumeMounts []VolumeMount, 
 		}
 		resolved, hostDir, err := r.ensureLocalVolume(volumeMount.VolumeID)
 		if err != nil {
-			if errdefs.IsNotFound(err) {
-				return nil, nil, fmt.Errorf("volume %s not found", volumeMount.VolumeID)
-			}
 			return nil, nil, err
 		}
 		normalized[index].VolumeID = resolved.VolumeID
