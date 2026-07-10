@@ -322,8 +322,14 @@ func sandboxPortResponse(mapping SandboxPortMapping, host string) SandboxPortRes
 	}
 }
 func volumeErrorStatus(err error) int {
+	if status := gatewayErrorStatus(err, 0); status != 0 {
+		return status
+	}
 	if errdefs.IsNotFound(err) {
 		return http.StatusNotFound
+	}
+	if errdefs.IsConflict(err) {
+		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
 }

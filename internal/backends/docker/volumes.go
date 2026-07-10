@@ -17,6 +17,8 @@ import (
 
 	gateway "e2b-local/internal/gateway"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/errdefs"
 	"github.com/google/uuid"
 )
@@ -89,7 +91,7 @@ func (r *DockerRuntime) ListVolumes(_ context.Context) ([]RuntimeVolume, error) 
 		if !entry.IsDir() {
 			continue
 		}
-		if entry.Name() == dockerLocalVolumeMetadataDir {
+		if isDockerLocalVolumeReservedName(entry.Name()) {
 			continue
 		}
 		metadataPath := filepath.Join(base, dockerLocalVolumeMetadataDir, entry.Name()+dockerLocalVolumeMetadataSuffix)
@@ -113,13 +115,23 @@ func (r *DockerRuntime) GetVolume(_ context.Context, volumeID string) (RuntimeVo
 	return volume, err
 }
 
-func (r *DockerRuntime) DeleteVolume(_ context.Context, volumeID string) (bool, error) {
+func (r *DockerRuntime) DeleteVolume(ctx context.Context, volumeID string) (bool, error) {
+	r.volumeMountMu.Lock()
+	defer r.volumeMountMu.Unlock()
+
 	_, dir, err := r.localVolume(volumeID)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return false, nil
 		}
 		return false, err
+	}
+	inUse, err := r.dockerLocalVolumeInUse(ctx, dir)
+	if err != nil {
+		return false, fmt.Errorf("check docker local volume %s usage: %w", volumeID, err)
+	}
+	if inUse {
+		return false, gateway.NewGatewayError(http.StatusConflict, "volume %s is in use", volumeID)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return false, fmt.Errorf("remove docker local volume %s: %w", volumeID, err)
@@ -130,6 +142,36 @@ func (r *DockerRuntime) DeleteVolume(_ context.Context, volumeID string) (bool, 
 		}
 	}
 	return true, nil
+}
+
+func (r *DockerRuntime) dockerLocalVolumeInUse(ctx context.Context, dir string) (bool, error) {
+	if r.client == nil {
+		return false, fmt.Errorf("docker client is unavailable")
+	}
+	containers, err := r.client.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return false, fmt.Errorf("list docker containers: %w", err)
+	}
+	for _, containerInfo := range containers {
+		for _, mountPoint := range containerInfo.Mounts {
+			if mountPoint.Type == mount.TypeBind && dockerBindMountSourceMatches(mountPoint.Source, dir) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func dockerBindMountSourceMatches(source string, dir string) bool {
+	source = filepath.Clean(strings.TrimSpace(source))
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if source == dir {
+		return true
+	}
+	if goruntime.GOOS == "darwin" || goruntime.GOOS == "windows" {
+		return strings.EqualFold(source, dir)
+	}
+	return false
 }
 
 func (r *DockerRuntime) GetVolumePathInfo(_ context.Context, volumeID string, path string) (gateway.VolumeEntryStat, error) {
@@ -449,7 +491,7 @@ func dockerLocalVolumeDirName(volumeID string) (string, error) {
 	if len(volumeID) > maxDockerVolumeIDLength {
 		return "", gateway.NewGatewayError(http.StatusBadRequest, "volume id is too long")
 	}
-	if strings.Contains(volumeID, "\x00") || strings.ContainsAny(volumeID, `/\`) || volumeID == "." || volumeID == ".." || volumeID == dockerLocalVolumeMetadataDir || volumeID == dockerLocalVolumeMetadataFile {
+	if strings.Contains(volumeID, "\x00") || strings.ContainsAny(volumeID, `/\`) || volumeID == "." || volumeID == ".." || isDockerLocalVolumeReservedName(volumeID) {
 		return "", gateway.NewGatewayError(http.StatusBadRequest, "invalid volume id")
 	}
 	for _, r := range volumeID {
@@ -459,6 +501,10 @@ func dockerLocalVolumeDirName(volumeID string) (string, error) {
 		return "", gateway.NewGatewayError(http.StatusBadRequest, "invalid volume id")
 	}
 	return volumeID, nil
+}
+
+func isDockerLocalVolumeReservedName(name string) bool {
+	return strings.EqualFold(name, dockerLocalVolumeMetadataDir) || strings.EqualFold(name, dockerLocalVolumeMetadataFile)
 }
 
 func readDockerLocalVolumeMetadata(dir string, metadataPath string) (RuntimeVolume, error) {
@@ -557,7 +603,6 @@ func isVolumeContentPathEscape(err error) bool {
 }
 
 func cleanVolumeContentPath(rawPath string, allowRoot bool) (string, error) {
-	rawPath = strings.TrimSpace(rawPath)
 	if rawPath == "" {
 		if allowRoot {
 			return "", nil

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"e2b-local/internal/e2bapi"
@@ -89,9 +90,10 @@ const (
 )
 
 type DockerRuntime struct {
-	cfg    DockerRuntimeConfig
-	client *client.Client
-	logger *log.Logger
+	cfg           DockerRuntimeConfig
+	client        *client.Client
+	logger        *log.Logger
+	volumeMountMu sync.RWMutex
 }
 
 func init() {
@@ -226,8 +228,10 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 	portBindings := dockerPortBindings(envdPort, publishedPorts, r.cfg.PublishedHostIP)
 	containerName := r.cfg.ContainerNamePrefix + req.SandboxID
 	initEnabled := true
+	r.volumeMountMu.RLock()
 	volumeMounts, mounts, err := r.mounts(ctx, req.VolumeMounts, envdBinary)
 	if err != nil {
+		r.volumeMountMu.RUnlock()
 		return SandboxRuntimeInfo{}, err
 	}
 	labelReq := req
@@ -253,6 +257,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 		containerCreatePlatform(selectedPlatform),
 		containerName,
 	)
+	r.volumeMountMu.RUnlock()
 	if err != nil {
 		return SandboxRuntimeInfo{}, fmt.Errorf("create docker container: %w", err)
 	}

@@ -2078,6 +2078,28 @@ func TestVolumeEndpointsUseRuntime(t *testing.T) {
 	}
 }
 
+func TestDeleteVolumePreservesConflictStatus(t *testing.T) {
+	runtime := &recordingRuntime{
+		volumes:         []RuntimeVolume{{VolumeID: "test-volume", Name: "test-volume"}},
+		deleteVolumeErr: gatewayError(http.StatusConflict, "volume test-volume is in use"),
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/volumes/test-volume", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected delete status %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	if len(runtime.deletedVolumeIDs) != 0 {
+		t.Fatalf("expected volume deletion to be rejected, got %#v", runtime.deletedVolumeIDs)
+	}
+}
+
 func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
@@ -2246,6 +2268,73 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 	app.ServeHTTP(tooLargeRec, tooLargeReq)
 	if tooLargeRec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected too large upload status %d, got %d: %s", http.StatusRequestEntityTooLarge, tooLargeRec.Code, tooLargeRec.Body.String())
+	}
+}
+
+func TestVolumeContentEndpointsPreservePathWhitespace(t *testing.T) {
+	runtime := &recordingRuntime{
+		volumes: []RuntimeVolume{{VolumeID: "test-volume", Name: "test-volume"}},
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	for _, request := range []struct {
+		path    string
+		content string
+	}{
+		{path: "report.txt", content: "plain"},
+		{path: "report.txt%20", content: "trailing-space"},
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path="+request.path+"&force=true", strings.NewReader(request.content))
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("write %q status %d: %s", request.path, rec.Code, rec.Body.String())
+		}
+	}
+
+	fileReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=report.txt%20", nil)
+	fileRec := httptest.NewRecorder()
+	app.ServeHTTP(fileRec, fileReq)
+	if fileRec.Code != http.StatusOK || fileRec.Body.String() != "trailing-space" {
+		t.Fatalf("expected trailing-space file, got status %d body %q", fileRec.Code, fileRec.Body.String())
+	}
+
+	plainReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=report.txt", nil)
+	plainRec := httptest.NewRecorder()
+	app.ServeHTTP(plainRec, plainReq)
+	if plainRec.Code != http.StatusOK || plainRec.Body.String() != "plain" {
+		t.Fatalf("expected plain file to remain distinct, got status %d body %q", plainRec.Code, plainRec.Body.String())
+	}
+
+	statReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=report.txt%20", nil)
+	statRec := httptest.NewRecorder()
+	app.ServeHTTP(statRec, statReq)
+	if statRec.Code != http.StatusOK {
+		t.Fatalf("stat trailing-space file status %d: %s", statRec.Code, statRec.Body.String())
+	}
+	var stat VolumeEntryStat
+	if err := json.Unmarshal(statRec.Body.Bytes(), &stat); err != nil {
+		t.Fatalf("decode trailing-space stat: %v", err)
+	}
+	if stat.Name != "report.txt " || stat.Path != "/report.txt " {
+		t.Fatalf("stat changed trailing-space path: %#v", stat)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=1", nil)
+	listRec := httptest.NewRecorder()
+	app.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list whitespace-sensitive files status %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var entries []VolumeEntryStat
+	if err := json.Unmarshal(listRec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode whitespace-sensitive entries: %v", err)
+	}
+	if len(entries) != 2 || entries[0].Path != "/report.txt" || entries[1].Path != "/report.txt " {
+		t.Fatalf("expected distinct whitespace-sensitive entries, got %#v", entries)
 	}
 }
 
@@ -2603,6 +2692,7 @@ type recordingRuntime struct {
 	volumeDirs          map[string]recordingVolumeContentEntry
 	createRuntimeInfo   SandboxRuntimeInfo
 	deletedVolumeIDs    []string
+	deleteVolumeErr     error
 	inspectCalls        []SandboxRuntimeInfo
 	inspectResults      map[string]SandboxRuntimeInspection
 	inspectErr          error
@@ -2801,6 +2891,9 @@ func (r *recordingRuntime) GetVolume(ctx context.Context, volumeID string) (Runt
 }
 
 func (r *recordingRuntime) DeleteVolume(ctx context.Context, volumeID string) (bool, error) {
+	if r.deleteVolumeErr != nil {
+		return false, r.deleteVolumeErr
+	}
 	for i, volume := range r.volumes {
 		if volume.VolumeID == volumeID {
 			r.volumes = append(r.volumes[:i], r.volumes[i+1:]...)
@@ -2936,7 +3029,7 @@ func recordingVolumeContentKeyParts(key string) (string, string) {
 }
 
 func recordingVolumeContentPath(path string) string {
-	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+	path = strings.ReplaceAll(path, "\\", "/")
 	path = strings.TrimPrefix(path, "/")
 	path = strings.TrimSuffix(path, "/")
 	return path
