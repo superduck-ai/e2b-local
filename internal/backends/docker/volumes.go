@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// 卷内容位于 <root>/<volumeID>，管理元数据单独放在 <root>/.metadata，避免暴露给 sandbox。
 const (
 	maxDockerVolumeListDepth        = 10
 	maxDockerVolumeIDLength         = 128
@@ -38,6 +39,9 @@ type dockerLocalVolumeMetadata struct {
 }
 
 func (r *DockerRuntime) CreateVolume(_ context.Context, name string) (RuntimeVolume, error) {
+	r.volumeCreateMu.Lock()
+	defer r.volumeCreateMu.Unlock()
+
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return RuntimeVolume{}, fmt.Errorf("volume name is required")
@@ -47,6 +51,7 @@ func (r *DockerRuntime) CreateVolume(_ context.Context, name string) (RuntimeVol
 		return RuntimeVolume{}, err
 	}
 	if info, err := os.Lstat(dir); err == nil {
+		// 已有目录只有携带有效受管元数据时才可复用，避免接管用户预先创建的目录。
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return RuntimeVolume{}, fmt.Errorf("docker local volume path %s is not a directory", dir)
 		}
@@ -91,6 +96,7 @@ func (r *DockerRuntime) ListVolumes(_ context.Context) ([]RuntimeVolume, error) 
 		if !entry.IsDir() {
 			continue
 		}
+		// 大小写不敏感文件系统会把 .METADATA 与 .metadata 视为同一目录。
 		if isDockerLocalVolumeReservedName(entry.Name()) {
 			continue
 		}
@@ -116,6 +122,7 @@ func (r *DockerRuntime) GetVolume(_ context.Context, volumeID string) (RuntimeVo
 }
 
 func (r *DockerRuntime) DeleteVolume(ctx context.Context, volumeID string) (bool, error) {
+	// 写锁与 CreateSandbox 的读锁配对，保证“检查引用并删除”不会和容器创建交错。
 	r.volumeMountMu.Lock()
 	defer r.volumeMountMu.Unlock()
 
@@ -148,6 +155,7 @@ func (r *DockerRuntime) dockerLocalVolumeInUse(ctx context.Context, dir string) 
 	if r.client == nil {
 		return false, fmt.Errorf("docker client is unavailable")
 	}
+	// 停止的容器仍保留挂载引用，因此必须查询全部容器而不只是运行中的容器。
 	containers, err := r.client.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return false, fmt.Errorf("list docker containers: %w", err)
@@ -169,6 +177,7 @@ func dockerBindMountSourceMatches(source string, dir string) bool {
 		return true
 	}
 	if goruntime.GOOS == "darwin" || goruntime.GOOS == "windows" {
+		// 默认 macOS/Windows 文件系统不区分大小写，路径比较需保持相同语义。
 		return strings.EqualFold(source, dir)
 	}
 	return false
@@ -251,6 +260,7 @@ func (r *DockerRuntime) WriteVolumeFile(_ context.Context, volumeID string, path
 		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("open volume file parent", err)
 	}
 	defer func() { _ = parentRoot.Close() }()
+	// 后续操作锚定在已打开的父目录，sandbox 即使替换路径组件也无法把写入引到卷外。
 	targetName := filepath.FromSlash(pathpkg.Base(rel))
 
 	if info, err := parentRoot.Lstat(targetName); err == nil {
@@ -270,6 +280,7 @@ func (r *DockerRuntime) WriteVolumeFile(_ context.Context, volumeID string, path
 	if opts.Mode != nil {
 		mode = os.FileMode(*opts.Mode)
 	}
+	// 先完整写入并同步临时文件，上传失败时旧文件和目标路径都不会留下半截内容。
 	tmpName, err := writeVolumeTempFile(parentRoot, body, mode, opts)
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
@@ -282,6 +293,7 @@ func (r *DockerRuntime) WriteVolumeFile(_ context.Context, volumeID string, path
 			return gateway.VolumeEntryStat{}, fmt.Errorf("replace volume file: %w", err)
 		}
 	} else {
+		// hard link 提供原子的“不存在才创建”语义，避免预检查与发布之间的竞态。
 		if err := parentRoot.Link(tmpName, targetName); err != nil {
 			if os.IsExist(err) {
 				return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusConflict, "path already exists")
@@ -427,6 +439,7 @@ func (r *DockerRuntime) ensureLocalVolume(volumeID string) (RuntimeVolume, strin
 	if !errdefs.IsNotFound(err) {
 		return RuntimeVolume{}, "", err
 	}
+	// 挂载请求沿用“首次引用即创建”的本地卷语义，并由 CreateVolume 写入受管元数据。
 	volume, err = r.CreateVolume(context.Background(), volumeID)
 	if err != nil {
 		return RuntimeVolume{}, "", err
@@ -516,6 +529,7 @@ func readDockerLocalVolumeMetadata(dir string, metadataPath string) (RuntimeVolu
 		return RuntimeVolume{}, err
 	}
 
+	// 兼容早期版本：读取内容目录中的旧标记后迁移到不会被挂载的元数据目录。
 	legacyPath := filepath.Join(dir, dockerLocalVolumeMetadataFile)
 	metadata, err = readDockerLocalVolumeMetadataFile(legacyPath)
 	if err != nil {
@@ -569,6 +583,7 @@ func resolveVolumeContentPath(rawPath string, allowRoot bool) (string, string, e
 	return rel, volumeRootPath(rel), nil
 }
 
+// openVolumeContentRoot 将后续文件操作限制在卷根目录，阻止符号链接和并发换目录逃逸。
 func openVolumeContentRoot(dir string) (*os.Root, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -602,6 +617,7 @@ func isVolumeContentPathEscape(err error) bool {
 	return false
 }
 
+// cleanVolumeContentPath 统一路径分隔符并拒绝上跳，同时原样保留 Unix 合法的首尾空白字符。
 func cleanVolumeContentPath(rawPath string, allowRoot bool) (string, error) {
 	if rawPath == "" {
 		if allowRoot {
@@ -639,6 +655,7 @@ func ensureVolumeContentPathAllowed(rel string) error {
 	if rel == "" {
 		return nil
 	}
+	// 保留名按不区分大小写处理，兼容默认 macOS/Windows 文件系统语义。
 	reserved := strings.ToLower(dockerLocalVolumeMetadataFile)
 	normalized := strings.ToLower(rel)
 	if normalized == reserved || strings.HasPrefix(normalized, reserved+"/") {
@@ -681,6 +698,7 @@ func applyVolumeOwnership(file *os.File, opts gateway.VolumeWriteOptions, label 
 	return nil
 }
 
+// writeVolumeTempFile 在目标目录内完成写入、权限设置与 fsync，成功后才交给调用方发布。
 func writeVolumeTempFile(root *os.Root, body io.Reader, mode os.FileMode, opts gateway.VolumeWriteOptions) (string, error) {
 	var file *os.File
 	var tmpName string
@@ -728,6 +746,7 @@ func writeVolumeTempFile(root *os.Root, body io.Reader, mode os.FileMode, opts g
 	return tmpName, nil
 }
 
+// writeFileAtomic 使用同目录临时文件加 rename，避免读到截断或半写入的元数据。
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -805,6 +824,7 @@ func volumeEntryStatFromInfo(root *os.Root, rootPath string, rel string, info os
 		}
 		stat.Type = "symlink"
 		target, err := root.Readlink(rootPath)
+		// 只回显仍位于卷内的目标，避免泄露宿主机绝对路径或卷外路径信息。
 		if err == nil && volumeSymlinkTargetWithinRoot(rel, target) {
 			stat.Target = target
 		}

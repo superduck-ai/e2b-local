@@ -90,10 +90,13 @@ const (
 )
 
 type DockerRuntime struct {
-	cfg           DockerRuntimeConfig
-	client        *client.Client
-	logger        *log.Logger
+	cfg    DockerRuntimeConfig
+	client *client.Client
+	logger *log.Logger
+	// 卷挂载解析到 ContainerCreate 完成前必须阻止同进程删除对应宿主目录。
 	volumeMountMu sync.RWMutex
+	// 首次建卷需串行化目录创建与元数据发布，避免并发调用观察到半完成状态。
+	volumeCreateMu sync.Mutex
 }
 
 func init() {
@@ -143,6 +146,7 @@ func copyStringMap(values map[string]string) map[string]string {
 }
 
 func NewDockerRuntime(cfg DockerRuntimeConfig, logger *log.Logger) (*DockerRuntime, error) {
+	// bind mount 的 Source 由 Docker daemon 解析，远端 daemon 看不到 gateway 主机上的卷目录。
 	if !dockerHostSupportsLocalBindMounts(cfg.Host) {
 		return nil, fmt.Errorf("docker bind-backed volumes require a local Docker daemon; got docker.host %q", cfg.Host)
 	}
@@ -165,6 +169,7 @@ func NewDockerRuntime(cfg DockerRuntimeConfig, logger *log.Logger) (*DockerRunti
 	}, nil
 }
 
+// dockerHostSupportsLocalBindMounts 只接受本地 socket 或回环网络端点。
 func dockerHostSupportsLocalBindMounts(host string) bool {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -228,6 +233,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 	portBindings := dockerPortBindings(envdPort, publishedPorts, r.cfg.PublishedHostIP)
 	containerName := r.cfg.ContainerNamePrefix + req.SandboxID
 	initEnabled := true
+	// 持有读锁直到 Docker 登记完挂载，避免删除操作在目录解析后、容器创建前移除卷。
 	r.volumeMountMu.RLock()
 	volumeMounts, mounts, err := r.mounts(ctx, req.VolumeMounts, envdBinary)
 	if err != nil {
@@ -1332,6 +1338,7 @@ func dockerVolumeMountsFromLabels(labels map[string]string) []VolumeMount {
 	return normalizeVolumeMounts(decoded)
 }
 
+// dockerVolumeMountsFromMountPoints 是标签缺失时的恢复兜底，同时兼容旧 named volume 与新 bind mount。
 func (r *DockerRuntime) dockerVolumeMountsFromMountPoints(mounts []dockertypes.MountPoint) []VolumeMount {
 	result := make([]VolumeMount, 0, len(mounts))
 	volumeRoot := filepath.Clean(strings.TrimSpace(r.cfg.VolumeHostPath))
@@ -1345,6 +1352,7 @@ func (r *DockerRuntime) dockerVolumeMountsFromMountPoints(mounts []dockertypes.M
 		case mount.TypeVolume:
 			name = strings.TrimSpace(mountPoint.Name)
 		case mount.TypeBind:
+			// 只接受卷根目录的直接子目录，避免把任意宿主 bind mount 误报成受管卷。
 			source := filepath.Clean(strings.TrimSpace(mountPoint.Source))
 			if volumeRoot == "" {
 				continue
@@ -1840,6 +1848,7 @@ func (r *DockerRuntime) mounts(ctx context.Context, volumeMounts []VolumeMount, 
 		if !strings.HasPrefix(volumeMount.Path, "/") {
 			return nil, nil, fmt.Errorf("volume mount path must be absolute: %s", volumeMount.Path)
 		}
+		// 本地卷目录直接作为 bind source，内容 API 与 sandbox 因而访问同一份数据。
 		resolved, hostDir, err := r.ensureLocalVolume(volumeMount.VolumeID)
 		if err != nil {
 			return nil, nil, err

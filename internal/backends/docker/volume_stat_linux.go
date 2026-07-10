@@ -10,6 +10,7 @@ import (
 	gateway "e2b-local/internal/gateway"
 )
 
+// populateVolumeEntryPlatformStat 从 Linux stat 结构补齐通用 FileInfo 不提供的属主和时间字段。
 func populateVolumeEntryPlatformStat(info os.FileInfo, stat *gateway.VolumeEntryStat) {
 	sys, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

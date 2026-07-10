@@ -88,6 +88,7 @@ type VolumeRuntime interface {
 	DeleteVolume(ctx context.Context, volumeID string) (bool, error)
 }
 
+// VolumeContentRuntime 定义卷内文件和目录操作；具体实现负责路径边界与原子写入。
 type VolumeContentRuntime interface {
 	GetVolumePathInfo(ctx context.Context, volumeID string, path string) (VolumeEntryStat, error)
 	ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error)
@@ -101,6 +102,8 @@ type RuntimeVolume struct {
 	Name     string
 }
 
+// VolumeEntryStat 是卷内容 API 返回的可序列化文件属性。
+// 不支持原生 stat 字段的平台会让 UID/GID 保持零值，并以 mtime 回退 atime/ctime。
 type VolumeEntryStat struct {
 	Atime  time.Time `json:"atime"`
 	Mtime  time.Time `json:"mtime"`
@@ -115,6 +118,7 @@ type VolumeEntryStat struct {
 	Target string    `json:"target,omitempty"`
 }
 
+// VolumeWriteOptions 使用指针区分“未指定”与显式设置为零的权限或属主值。
 type VolumeWriteOptions struct {
 	Force bool
 	Mode  *int

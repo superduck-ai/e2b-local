@@ -77,7 +77,8 @@ type DockerRuntimeConfig struct {
 	PublishedPorts       []int  `yaml:"published_ports"`
 	PublishedHostIP      string `yaml:"published_host_ip"`
 	HealthTimeoutSeconds int    `yaml:"health_timeout_seconds"`
-	VolumeHostPath       string `yaml:"volume_host_path"`
+	// VolumeHostPath 是 Docker bind mount 与卷内容 API 共享的宿主机数据根目录。
+	VolumeHostPath string `yaml:"volume_host_path"`
 }
 
 type OrbstackRuntimeConfig struct {

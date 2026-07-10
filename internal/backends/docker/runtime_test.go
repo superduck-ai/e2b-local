@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -214,6 +215,50 @@ func TestDockerRuntimeLocalVolumeLifecycleUsesManagedDirectories(t *testing.T) {
 	}
 	if _, err := os.Stat(metadataPath); !os.IsNotExist(err) {
 		t.Fatalf("expected managed metadata removed, stat err=%v", err)
+	}
+}
+
+func TestDockerRuntimeCreateVolumeIsConcurrentAndIdempotent(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+
+	const callers = 32
+	type result struct {
+		volume RuntimeVolume
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan result, callers)
+	for range callers {
+		go func() {
+			<-start
+			volume, err := runtime.CreateVolume(context.Background(), "shared")
+			results <- result{volume: volume, err: err}
+		}()
+	}
+	close(start)
+
+	var firstErr error
+	for range callers {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("concurrent create volume: %w", result.err)
+		}
+		if (result.volume.VolumeID != "shared" || result.volume.Name != "shared") && firstErr == nil {
+			firstErr = fmt.Errorf("unexpected concurrent create result: %#v", result.volume)
+		}
+	}
+	if firstErr != nil {
+		t.Fatal(firstErr)
+	}
+
+	volumes, err := runtime.ListVolumes(context.Background())
+	if err != nil {
+		t.Fatalf("list volumes after concurrent create: %v", err)
+	}
+	if len(volumes) != 1 || volumes[0].VolumeID != "shared" {
+		t.Fatalf("expected one shared volume, got %#v", volumes)
 	}
 }
 

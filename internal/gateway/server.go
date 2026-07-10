@@ -322,6 +322,7 @@ func sandboxPortResponse(mapping SandboxPortMapping, host string) SandboxPortRes
 	}
 }
 func volumeErrorStatus(err error) int {
+	// 先保留 runtime 明确给出的 HTTP 语义，再映射 Docker 原生错误。
 	if status := gatewayErrorStatus(err, 0); status != 0 {
 		return status
 	}

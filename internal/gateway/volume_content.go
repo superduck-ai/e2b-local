@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// maxVolumeFileUploadBytes 限制单次流式上传，避免客户端耗尽宿主机磁盘。
 var maxVolumeFileUploadBytes int64 = 512 << 20
 
 func (a *App) volumeContentRuntime() (VolumeContentRuntime, error) {
@@ -49,6 +50,7 @@ func (a *App) handleVolumeContentFileGet(c *gin.Context) {
 	c.Header("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(c.Writer, body); err != nil {
 		if c.Writer.Written() {
+			// 响应头和部分文件已发送，此时追加 JSON 错误体只会进一步污染下载内容。
 			a.logger.Printf("volume content download failed volume_id=%s path=%q error=%v", c.Param("volumeID"), c.Query("path"), err)
 			return
 		}
@@ -68,6 +70,7 @@ func (a *App) handleVolumeContentFilePut(c *gin.Context) {
 		writeGatewayError(c, err, http.StatusBadRequest)
 		return
 	}
+	// MaxBytesReader 在流式读取过程中强制上限，底层原子写保证超限时不会发布临时内容。
 	body := http.MaxBytesReader(c.Writer, c.Request.Body, maxVolumeFileUploadBytes)
 	stat, err := runtime.WriteVolumeFile(a.callbackContext(c), c.Param("volumeID"), c.Query("path"), body, opts)
 	if err != nil {
@@ -161,6 +164,7 @@ func parseVolumeMode(value string) (int, error) {
 		return 0, gatewayError(http.StatusBadRequest, "mode must be a decimal integer or an octal integer prefixed with 0 or 0o")
 	}
 
+	// 普通数字按十进制解析；前导 0 或 0o 前缀明确表示传统 Unix 八进制权限。
 	base := 10
 	parseValue := value
 	if strings.HasPrefix(value, "0o") || strings.HasPrefix(value, "0O") {
@@ -184,6 +188,7 @@ func parseVolumeMode(value string) (int, error) {
 func writeVolumeContentError(c *gin.Context, err error, fallback int) {
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
+		// 将流中途触发的大小限制转换为稳定的 413，而不是泛化成内部错误。
 		writeGatewayError(c, gatewayError(http.StatusRequestEntityTooLarge, "volume file upload is too large"), http.StatusRequestEntityTooLarge)
 		return
 	}
