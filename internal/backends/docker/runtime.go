@@ -168,14 +168,15 @@ func dockerHostSupportsLocalBindMounts(host string) bool {
 	if host == "" {
 		return true
 	}
-	if strings.HasPrefix(host, "unix://") || strings.HasPrefix(host, "npipe://") {
+	lowerHost := strings.ToLower(host)
+	if strings.HasPrefix(lowerHost, "unix://") || strings.HasPrefix(lowerHost, "npipe://") {
 		return true
 	}
 	parsed, err := url.Parse(host)
 	if err != nil {
 		return false
 	}
-	switch parsed.Scheme {
+	switch strings.ToLower(parsed.Scheme) {
 	case "tcp", "http", "https":
 		name := parsed.Hostname()
 		if name == "" {

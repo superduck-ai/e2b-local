@@ -51,8 +51,11 @@ func TestDockerHostSupportsLocalBindMounts(t *testing.T) {
 		want bool
 	}{
 		{host: "unix:///var/run/docker.sock", want: true},
+		{host: "UNIX:///var/run/docker.sock", want: true},
 		{host: "npipe:////./pipe/docker_engine", want: true},
+		{host: "NPIPE:////./pipe/docker_engine", want: true},
 		{host: "tcp://127.0.0.1:2375", want: true},
+		{host: "TCP://127.0.0.1:2375", want: true},
 		{host: "tcp://localhost:2375", want: true},
 		{host: "tcp://192.0.2.10:2375", want: false},
 		{host: "ssh://example.com", want: false},
@@ -508,6 +511,13 @@ func TestDockerRuntimeVolumeContentRejectsReservedMetadataPath(t *testing.T) {
 			name: "write metadata",
 			call: func() error {
 				_, err := runtime.WriteVolumeFile(context.Background(), "skills", dockerLocalVolumeMetadataFile, strings.NewReader("{}"), gateway.VolumeWriteOptions{Force: true})
+				return err
+			},
+		},
+		{
+			name: "write metadata with different casing",
+			call: func() error {
+				_, err := runtime.WriteVolumeFile(context.Background(), "skills", strings.ToUpper(dockerLocalVolumeMetadataFile), strings.NewReader("{}"), gateway.VolumeWriteOptions{Force: true})
 				return err
 			},
 		},

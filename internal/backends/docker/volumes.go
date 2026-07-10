@@ -514,7 +514,9 @@ func ensureVolumeContentPathAllowed(rel string) error {
 	if rel == "" {
 		return nil
 	}
-	if rel == dockerLocalVolumeMetadataFile || strings.HasPrefix(rel, dockerLocalVolumeMetadataFile+"/") {
+	reserved := strings.ToLower(dockerLocalVolumeMetadataFile)
+	normalized := strings.ToLower(rel)
+	if normalized == reserved || strings.HasPrefix(normalized, reserved+"/") {
 		return gateway.NewGatewayError(http.StatusBadRequest, "path is reserved")
 	}
 	return nil
