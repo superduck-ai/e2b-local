@@ -3,6 +3,7 @@ package dockerbackend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	gateway "e2b-local/internal/gateway"
 
 	"github.com/docker/docker/errdefs"
+	"github.com/google/uuid"
 )
 
 const (
@@ -135,11 +137,16 @@ func (r *DockerRuntime) GetVolumePathInfo(_ context.Context, volumeID string, pa
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	rel, fullPath, err := r.resolveVolumeContentPath(dir, path, true, true)
+	rel, rootPath, err := resolveVolumeContentPath(path, true)
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	return volumeEntryStat(fullPath, rel)
+	root, err := openVolumeContentRoot(dir)
+	if err != nil {
+		return gateway.VolumeEntryStat{}, err
+	}
+	defer func() { _ = root.Close() }()
+	return volumeEntryStat(root, rootPath, rel)
 }
 
 func (r *DockerRuntime) ReadVolumeFile(_ context.Context, volumeID string, path string) (io.ReadCloser, error) {
@@ -147,16 +154,21 @@ func (r *DockerRuntime) ReadVolumeFile(_ context.Context, volumeID string, path 
 	if err != nil {
 		return nil, err
 	}
-	_, fullPath, err := r.resolveVolumeContentPath(dir, path, false, true)
+	_, rootPath, err := resolveVolumeContentPath(path, false)
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.Open(fullPath)
+	root, err := openVolumeContentRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(rootPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, errdefs.NotFound(fmt.Errorf("volume file not found"))
 		}
-		return nil, fmt.Errorf("read volume file: %w", err)
+		return nil, wrapVolumeContentPathError("read volume file", err)
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -175,60 +187,67 @@ func (r *DockerRuntime) WriteVolumeFile(_ context.Context, volumeID string, path
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	rel, fullPath, err := r.resolveVolumeContentPath(dir, path, false, false)
+	rel, _, err := resolveVolumeContentPath(path, false)
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	parent := filepath.Dir(fullPath)
-	if err := ensureVolumeDirForCreate(dir, parent, 0o755); err != nil {
+	root, err := openVolumeContentRoot(dir)
+	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	if info, err := os.Lstat(fullPath); err == nil {
+	defer func() { _ = root.Close() }()
+
+	parentPath := volumeRootPath(pathpkg.Dir(rel))
+	if err := root.MkdirAll(parentPath, 0o755); err != nil {
+		if os.IsExist(err) {
+			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusBadRequest, "path parent is not a directory")
+		}
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("create volume file parent", err)
+	}
+	parentRoot, err := root.OpenRoot(parentPath)
+	if err != nil {
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("open volume file parent", err)
+	}
+	defer func() { _ = parentRoot.Close() }()
+	targetName := filepath.FromSlash(pathpkg.Base(rel))
+
+	if info, err := parentRoot.Lstat(targetName); err == nil {
 		if info.IsDir() {
 			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusBadRequest, "path is a directory")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusBadRequest, "path is a symbolic link")
 		}
 		if !opts.Force {
 			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusConflict, "path already exists")
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			if err := ensurePathWithinRoot(dir, fullPath); err != nil {
-				return gateway.VolumeEntryStat{}, err
-			}
-		}
 	} else if !os.IsNotExist(err) {
-		return gateway.VolumeEntryStat{}, fmt.Errorf("stat volume file: %w", err)
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("stat volume file", err)
 	}
 	mode := os.FileMode(0o644)
 	if opts.Mode != nil {
 		mode = os.FileMode(*opts.Mode)
 	}
-	writePath := fullPath
-	if info, err := os.Lstat(fullPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		writePath, err = filepath.EvalSymlinks(fullPath)
-		if err != nil {
-			return gateway.VolumeEntryStat{}, fmt.Errorf("resolve volume file target: %w", err)
-		}
-	}
-	tmpPath, err := writeVolumeTempFile(filepath.Dir(writePath), body, mode, opts)
+	tmpName, err := writeVolumeTempFile(parentRoot, body, mode, opts)
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
 	defer func() {
-		_ = os.Remove(tmpPath)
+		_ = parentRoot.Remove(tmpName)
 	}()
 	if opts.Force {
-		if err := os.Rename(tmpPath, writePath); err != nil {
+		if err := parentRoot.Rename(tmpName, targetName); err != nil {
 			return gateway.VolumeEntryStat{}, fmt.Errorf("replace volume file: %w", err)
 		}
 	} else {
-		if err := os.Link(tmpPath, writePath); err != nil {
+		if err := parentRoot.Link(tmpName, targetName); err != nil {
 			if os.IsExist(err) {
 				return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusConflict, "path already exists")
 			}
 			return gateway.VolumeEntryStat{}, fmt.Errorf("create volume file: %w", err)
 		}
 	}
-	return volumeEntryStat(fullPath, rel)
+	return volumeEntryStat(parentRoot, targetName, rel)
 }
 
 func (r *DockerRuntime) ListVolumeDir(_ context.Context, volumeID string, path string, depth int) ([]gateway.VolumeEntryStat, error) {
@@ -236,16 +255,21 @@ func (r *DockerRuntime) ListVolumeDir(_ context.Context, volumeID string, path s
 	if err != nil {
 		return nil, err
 	}
-	_, fullPath, err := r.resolveVolumeContentPath(dir, path, true, true)
+	rel, rootPath, err := resolveVolumeContentPath(path, true)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(fullPath)
+	root, err := openVolumeContentRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	info, err := root.Stat(rootPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, errdefs.NotFound(fmt.Errorf("volume directory not found"))
 		}
-		return nil, fmt.Errorf("stat volume directory: %w", err)
+		return nil, wrapVolumeContentPathError("stat volume directory", err)
 	}
 	if !info.IsDir() {
 		return nil, gateway.NewGatewayError(http.StatusBadRequest, "path is not a directory")
@@ -256,8 +280,13 @@ func (r *DockerRuntime) ListVolumeDir(_ context.Context, volumeID string, path s
 	if depth > maxDockerVolumeListDepth {
 		return nil, gateway.NewGatewayError(http.StatusBadRequest, "volume directory depth must be less than or equal to %d", maxDockerVolumeListDepth)
 	}
+	dirRoot, err := root.OpenRoot(rootPath)
+	if err != nil {
+		return nil, wrapVolumeContentPathError("open volume directory", err)
+	}
+	defer func() { _ = dirRoot.Close() }()
 	var result []gateway.VolumeEntryStat
-	if err := collectVolumeDirEntries(dir, fullPath, depth, &result); err != nil {
+	if err := collectVolumeDirEntries(dirRoot, rel, depth, &result); err != nil {
 		return nil, err
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -271,26 +300,53 @@ func (r *DockerRuntime) CreateVolumeDir(_ context.Context, volumeID string, path
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	rel, fullPath, err := r.resolveVolumeContentPath(dir, path, true, false)
+	rel, rootPath, err := resolveVolumeContentPath(path, true)
 	if err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
+	root, err := openVolumeContentRoot(dir)
+	if err != nil {
+		return gateway.VolumeEntryStat{}, err
+	}
+	defer func() { _ = root.Close() }()
 	mode := os.FileMode(0o755)
 	if opts.Mode != nil {
 		mode = os.FileMode(*opts.Mode)
 	}
-	if err := ensureVolumeDirForCreate(dir, fullPath, mode); err != nil {
-		return gateway.VolumeEntryStat{}, err
+	if info, err := root.Lstat(rootPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusBadRequest, "path is a symbolic link")
+		}
+		if !info.IsDir() {
+			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusBadRequest, "path is not a directory")
+		}
+	} else if !os.IsNotExist(err) {
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("stat volume directory", err)
 	}
+	if err := root.MkdirAll(rootPath, mode); err != nil {
+		if os.IsExist(err) {
+			return gateway.VolumeEntryStat{}, gateway.NewGatewayError(http.StatusBadRequest, "path parent is not a directory")
+		}
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("create volume directory", err)
+	}
+	dirFile, err := root.Open(rootPath)
+	if err != nil {
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("open volume directory", err)
+	}
+	defer func() { _ = dirFile.Close() }()
 	if opts.Mode != nil {
-		if err := os.Chmod(fullPath, mode); err != nil {
+		if err := dirFile.Chmod(mode); err != nil {
 			return gateway.VolumeEntryStat{}, fmt.Errorf("chmod volume directory: %w", err)
 		}
 	}
-	if err := applyVolumeOwnership(fullPath, opts, "volume directory"); err != nil {
+	if err := applyVolumeOwnership(dirFile, opts, "volume directory"); err != nil {
 		return gateway.VolumeEntryStat{}, err
 	}
-	return volumeEntryStat(fullPath, rel)
+	info, err := dirFile.Stat()
+	if err != nil {
+		return gateway.VolumeEntryStat{}, fmt.Errorf("stat volume directory: %w", err)
+	}
+	return volumeEntryStatFromInfo(root, rootPath, rel, info)
 }
 
 func (r *DockerRuntime) localVolume(volumeID string) (RuntimeVolume, string, error) {
@@ -456,7 +512,7 @@ func writeDockerLocalVolumeMetadata(metadataPath string, metadata dockerLocalVol
 	return nil
 }
 
-func (r *DockerRuntime) resolveVolumeContentPath(volumeRoot string, rawPath string, allowRoot bool, mustExist bool) (string, string, error) {
+func resolveVolumeContentPath(rawPath string, allowRoot bool) (string, string, error) {
 	rel, err := cleanVolumeContentPath(rawPath, allowRoot)
 	if err != nil {
 		return "", "", err
@@ -464,16 +520,40 @@ func (r *DockerRuntime) resolveVolumeContentPath(volumeRoot string, rawPath stri
 	if err := ensureVolumeContentPathAllowed(rel); err != nil {
 		return "", "", err
 	}
-	fullPath := filepath.Join(volumeRoot, filepath.FromSlash(rel))
-	if err := ensurePathLexicallyWithinRoot(volumeRoot, fullPath); err != nil {
-		return "", "", err
-	}
-	if mustExist {
-		if err := ensurePathWithinRoot(volumeRoot, fullPath); err != nil {
-			return "", "", err
+	return rel, volumeRootPath(rel), nil
+}
+
+func openVolumeContentRoot(dir string) (*os.Root, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errdefs.NotFound(fmt.Errorf("volume not found"))
 		}
+		return nil, fmt.Errorf("open volume root: %w", err)
 	}
-	return rel, fullPath, nil
+	return root, nil
+}
+
+func volumeRootPath(rel string) string {
+	if rel == "" {
+		return "."
+	}
+	return filepath.FromSlash(rel)
+}
+
+func wrapVolumeContentPathError(action string, err error) error {
+	if isVolumeContentPathEscape(err) {
+		return gateway.NewGatewayError(http.StatusBadRequest, "path escapes volume root")
+	}
+	return fmt.Errorf("%s: %w", action, err)
+}
+
+func isVolumeContentPathEscape(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		return pathErr.Err.Error() == "path escapes from parent"
+	}
+	return false
 }
 
 func cleanVolumeContentPath(rawPath string, allowRoot bool) (string, error) {
@@ -535,67 +615,7 @@ func ensurePathLexicallyWithinRoot(root string, target string) error {
 	return gateway.NewGatewayError(http.StatusBadRequest, "path escapes volume root")
 }
 
-func ensurePathWithinRoot(root string, target string) error {
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("resolve volume root: %w", err)
-	}
-	realTarget, err := filepath.EvalSymlinks(target)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return errdefs.NotFound(fmt.Errorf("volume path not found"))
-		}
-		return fmt.Errorf("resolve volume path: %w", err)
-	}
-	if err := ensurePathLexicallyWithinRoot(realRoot, realTarget); err != nil {
-		return gateway.NewGatewayError(http.StatusBadRequest, "path escapes volume root")
-	}
-	return nil
-}
-
-func ensureVolumeDirForCreate(root string, dir string, mode os.FileMode) error {
-	if err := ensurePathLexicallyWithinRoot(root, dir); err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(root, dir)
-	if err != nil {
-		return err
-	}
-	if rel == "." {
-		return nil
-	}
-	current := root
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		if part == "" || part == "." {
-			continue
-		}
-		next := filepath.Join(current, part)
-		info, err := os.Lstat(next)
-		if os.IsNotExist(err) {
-			if err := ensurePathWithinRoot(root, current); err != nil {
-				return err
-			}
-			if err := os.MkdirAll(dir, mode); err != nil {
-				return fmt.Errorf("create volume directory: %w", err)
-			}
-			return ensurePathWithinRoot(root, dir)
-		}
-		if err != nil {
-			return fmt.Errorf("stat volume directory component: %w", err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			if err := ensurePathWithinRoot(root, next); err != nil {
-				return err
-			}
-		} else if !info.IsDir() {
-			return gateway.NewGatewayError(http.StatusBadRequest, "path parent is not a directory")
-		}
-		current = next
-	}
-	return ensurePathWithinRoot(root, dir)
-}
-
-func applyVolumeOwnership(path string, opts gateway.VolumeWriteOptions, label string) error {
+func applyVolumeOwnership(file *os.File, opts gateway.VolumeWriteOptions, label string) error {
 	if opts.UID == nil && opts.GID == nil {
 		return nil
 	}
@@ -610,22 +630,33 @@ func applyVolumeOwnership(path string, opts gateway.VolumeWriteOptions, label st
 	if opts.GID != nil {
 		gid = *opts.GID
 	}
-	if err := os.Chown(path, uid, gid); err != nil {
+	if err := file.Chown(uid, gid); err != nil {
 		return fmt.Errorf("chown %s: %w", label, err)
 	}
 	return nil
 }
 
-func writeVolumeTempFile(dir string, body io.Reader, mode os.FileMode, opts gateway.VolumeWriteOptions) (string, error) {
-	file, err := os.CreateTemp(dir, ".e2b-write-*")
-	if err != nil {
-		return "", fmt.Errorf("create temporary volume file: %w", err)
+func writeVolumeTempFile(root *os.Root, body io.Reader, mode os.FileMode, opts gateway.VolumeWriteOptions) (string, error) {
+	var file *os.File
+	var tmpName string
+	for range 10 {
+		tmpName = ".e2b-write-" + uuid.NewString()
+		var err error
+		file, err = root.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return "", fmt.Errorf("create temporary volume file: %w", err)
+		}
 	}
-	tmpPath := file.Name()
+	if file == nil {
+		return "", fmt.Errorf("create temporary volume file: name collision")
+	}
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.Remove(tmpPath)
+			_ = root.Remove(tmpName)
 		}
 	}()
 
@@ -637,7 +668,7 @@ func writeVolumeTempFile(dir string, body io.Reader, mode os.FileMode, opts gate
 		_ = file.Close()
 		return "", fmt.Errorf("chmod volume file: %w", err)
 	}
-	if err := applyVolumeOwnership(tmpPath, opts, "volume file"); err != nil {
+	if err := applyVolumeOwnership(file, opts, "volume file"); err != nil {
 		_ = file.Close()
 		return "", err
 	}
@@ -649,7 +680,7 @@ func writeVolumeTempFile(dir string, body io.Reader, mode os.FileMode, opts gate
 		return "", fmt.Errorf("close volume file: %w", err)
 	}
 	cleanup = false
-	return tmpPath, nil
+	return tmpName, nil
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
@@ -691,22 +722,26 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-func volumeEntryStat(fullPath string, rel string) (gateway.VolumeEntryStat, error) {
-	info, err := os.Lstat(fullPath)
+func volumeEntryStat(root *os.Root, rootPath string, rel string) (gateway.VolumeEntryStat, error) {
+	info, err := root.Lstat(rootPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return gateway.VolumeEntryStat{}, errdefs.NotFound(fmt.Errorf("volume path not found"))
 		}
-		return gateway.VolumeEntryStat{}, fmt.Errorf("stat volume path: %w", err)
+		return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("stat volume path", err)
 	}
+	return volumeEntryStatFromInfo(root, rootPath, rel, info)
+}
+
+func volumeEntryStatFromInfo(root *os.Root, rootPath string, rel string, info os.FileInfo) (gateway.VolumeEntryStat, error) {
 	mtime := info.ModTime()
 	stat := gateway.VolumeEntryStat{
 		Atime: mtime,
 		Mtime: mtime,
 		Ctime: mtime,
 		Type:  "unknown",
-		Name:  filepath.Base(fullPath),
-		Path:  "/" + filepath.ToSlash(rel),
+		Name:  pathpkg.Base(rel),
+		Path:  "/" + rel,
 		Size:  info.Size(),
 		Mode:  int(info.Mode().Perm()),
 	}
@@ -717,9 +752,15 @@ func volumeEntryStat(fullPath string, rel string) (gateway.VolumeEntryStat, erro
 	}
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
+		if _, err := root.Stat(rootPath); err != nil {
+			if os.IsNotExist(err) {
+				return gateway.VolumeEntryStat{}, errdefs.NotFound(fmt.Errorf("volume path not found"))
+			}
+			return gateway.VolumeEntryStat{}, wrapVolumeContentPathError("resolve volume symbolic link", err)
+		}
 		stat.Type = "symlink"
-		target, err := os.Readlink(fullPath)
-		if err == nil {
+		target, err := root.Readlink(rootPath)
+		if err == nil && volumeSymlinkTargetWithinRoot(rel, target) {
 			stat.Target = target
 		}
 	case info.IsDir():
@@ -730,31 +771,53 @@ func volumeEntryStat(fullPath string, rel string) (gateway.VolumeEntryStat, erro
 	return stat, nil
 }
 
-func collectVolumeDirEntries(root string, dir string, depth int, result *[]gateway.VolumeEntryStat) error {
-	entries, err := os.ReadDir(dir)
+func volumeSymlinkTargetWithinRoot(rel string, target string) bool {
+	if filepath.IsAbs(target) || filepath.VolumeName(target) != "" {
+		return false
+	}
+	normalized := strings.ReplaceAll(target, "\\", "/")
+	if pathpkg.IsAbs(normalized) {
+		return false
+	}
+	resolved := pathpkg.Clean(pathpkg.Join(pathpkg.Dir(rel), normalized))
+	return resolved != ".." && !strings.HasPrefix(resolved, "../")
+}
+
+func collectVolumeDirEntries(root *os.Root, rel string, depth int, result *[]gateway.VolumeEntryStat) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return wrapVolumeContentPathError("open volume directory", err)
+	}
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
 	if err != nil {
 		return fmt.Errorf("read volume directory: %w", err)
 	}
+	if closeErr != nil {
+		return fmt.Errorf("close volume directory: %w", closeErr)
+	}
 	for _, entry := range entries {
-		if entry.Name() == dockerLocalVolumeMetadataFile {
+		if strings.EqualFold(entry.Name(), dockerLocalVolumeMetadataFile) {
 			continue
 		}
-		fullPath := filepath.Join(dir, entry.Name())
-		if err := ensurePathWithinRoot(root, fullPath); err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, fullPath)
-		if err != nil {
-			return err
-		}
-		stat, err := volumeEntryStat(fullPath, filepath.ToSlash(rel))
+		entryRel := pathpkg.Join(rel, entry.Name())
+		stat, err := volumeEntryStat(root, filepath.FromSlash(entry.Name()), entryRel)
 		if err != nil {
 			return err
 		}
 		*result = append(*result, stat)
 		if entry.IsDir() && depth > 1 {
-			if err := collectVolumeDirEntries(root, fullPath, depth-1, result); err != nil {
+			childRoot, err := root.OpenRoot(filepath.FromSlash(entry.Name()))
+			if err != nil {
+				return wrapVolumeContentPathError("open volume directory", err)
+			}
+			err = collectVolumeDirEntries(childRoot, entryRel, depth-1, result)
+			closeErr := childRoot.Close()
+			if err != nil {
 				return err
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close volume directory root: %w", closeErr)
 			}
 		}
 	}

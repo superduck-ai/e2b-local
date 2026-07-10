@@ -460,6 +460,117 @@ func TestDockerRuntimeVolumeContentForceWriteKeepsOldContentOnCopyFailure(t *tes
 	}
 }
 
+func TestDockerRuntimeVolumeContentWriteAnchorsParentDirectory(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("renaming an open directory is not portable on Windows")
+	}
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+	volume, err := runtime.CreateVolume(context.Background(), "skills")
+	if err != nil {
+		t.Fatalf("create local volume: %v", err)
+	}
+	if _, err := runtime.CreateVolumeDir(context.Background(), volume.VolumeID, "nested", gateway.VolumeWriteOptions{}); err != nil {
+		t.Fatalf("create nested volume directory: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := runtime.WriteVolumeFile(context.Background(), volume.VolumeID, "nested/file.txt", &gatedReader{
+			data:    []byte("anchored"),
+			started: started,
+			release: release,
+		}, gateway.VolumeWriteOptions{Force: true})
+		writeErr <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for volume write to start")
+	}
+	volumeDir := filepath.Join(cfg.VolumeHostPath, volume.VolumeID)
+	originalParent := filepath.Join(volumeDir, "nested")
+	movedParent := filepath.Join(volumeDir, "nested-original")
+	outsideDir := t.TempDir()
+	if err := os.Rename(originalParent, movedParent); err != nil {
+		t.Fatalf("move open volume parent: %v", err)
+	}
+	if err := os.Symlink(outsideDir, originalParent); err != nil {
+		t.Fatalf("replace volume parent with symlink: %v", err)
+	}
+	close(release)
+	released = true
+
+	select {
+	case err := <-writeErr:
+		if err != nil {
+			t.Fatalf("complete anchored volume write: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for volume write to finish")
+	}
+	data, err := os.ReadFile(filepath.Join(movedParent, "file.txt"))
+	if err != nil {
+		t.Fatalf("read file from anchored parent: %v", err)
+	}
+	if string(data) != "anchored" {
+		t.Fatalf("unexpected anchored file content %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected outside file not to be created, stat err=%v", err)
+	}
+}
+
+func TestDockerRuntimeVolumeContentWriteRejectsSymlinkTarget(t *testing.T) {
+	cfg := gateway.DefaultConfig().Docker
+	cfg.VolumeHostPath = t.TempDir()
+	runtime := &DockerRuntime{cfg: cfg}
+	volume, err := runtime.CreateVolume(context.Background(), "skills")
+	if err != nil {
+		t.Fatalf("create local volume: %v", err)
+	}
+	volumeDir := filepath.Join(cfg.VolumeHostPath, volume.VolumeID)
+	targetPath := filepath.Join(volumeDir, "target.txt")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o644); err != nil {
+		t.Fatalf("seed symlink target: %v", err)
+	}
+	if err := os.Symlink("target.txt", filepath.Join(volumeDir, "link.txt")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	linkStat, err := runtime.GetVolumePathInfo(context.Background(), volume.VolumeID, "link.txt")
+	if err != nil {
+		t.Fatalf("stat in-volume symlink: %v", err)
+	}
+	if linkStat.Type != "symlink" || linkStat.Target != "target.txt" {
+		t.Fatalf("unexpected in-volume symlink stat: %#v", linkStat)
+	}
+
+	_, err = runtime.WriteVolumeFile(context.Background(), volume.VolumeID, "link.txt", strings.NewReader("replacement"), gateway.VolumeWriteOptions{Force: true})
+	if err == nil {
+		t.Fatal("expected symlink target write to fail")
+	}
+	if status := gatewayErrorStatus(err, http.StatusInternalServerError); status != http.StatusBadRequest {
+		t.Fatalf("expected bad request for symlink target, got status %d err %v", status, err)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read symlink target after rejected write: %v", err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("expected symlink target to remain unchanged, got %q", data)
+	}
+}
+
 func TestDockerRuntimeLocalVolumeMigratesLegacyMetadataOutsideContentDir(t *testing.T) {
 	cfg := gateway.DefaultConfig().Docker
 	cfg.VolumeHostPath = t.TempDir()
@@ -618,12 +729,58 @@ func TestDockerRuntimeVolumeContentRejectsUnsafePaths(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	_, err := runtime.WriteVolumeFile(context.Background(), "skills", "escape/file.txt", strings.NewReader("x"), gateway.VolumeWriteOptions{Force: true})
-	if err == nil {
-		t.Fatal("expected symlink escape write to fail")
-	}
-	if status := gatewayErrorStatus(err, http.StatusInternalServerError); status != http.StatusBadRequest {
-		t.Fatalf("expected bad request for symlink escape, got status %d err %v", status, err)
+	for _, tt := range []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "write",
+			call: func() error {
+				_, err := runtime.WriteVolumeFile(context.Background(), "skills", "escape/file.txt", strings.NewReader("x"), gateway.VolumeWriteOptions{Force: true})
+				return err
+			},
+		},
+		{
+			name: "read",
+			call: func() error {
+				body, err := runtime.ReadVolumeFile(context.Background(), "skills", "escape/file.txt")
+				if body != nil {
+					_ = body.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "stat",
+			call: func() error {
+				_, err := runtime.GetVolumePathInfo(context.Background(), "skills", "escape")
+				return err
+			},
+		},
+		{
+			name: "list",
+			call: func() error {
+				_, err := runtime.ListVolumeDir(context.Background(), "skills", "escape", 1)
+				return err
+			},
+		},
+		{
+			name: "mkdir",
+			call: func() error {
+				_, err := runtime.CreateVolumeDir(context.Background(), "skills", "escape/nested", gateway.VolumeWriteOptions{})
+				return err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if err == nil {
+				t.Fatal("expected symlink escape to fail")
+			}
+			if status := gatewayErrorStatus(err, http.StatusInternalServerError); status != http.StatusBadRequest {
+				t.Fatalf("expected bad request for symlink escape, got status %d err %v", status, err)
+			}
+		})
 	}
 	if _, err := os.Stat(filepath.Join(outsideDir, "file.txt")); !os.IsNotExist(err) {
 		t.Fatalf("expected outside file not to be created, stat err=%v", err)
@@ -1024,4 +1181,25 @@ func (r *failingReader) Read(p []byte) (int, error) {
 		return copy(p, r.data), nil
 	}
 	return 0, errors.New("reader failed")
+}
+
+type gatedReader struct {
+	data    []byte
+	started chan struct{}
+	release <-chan struct{}
+	ready   bool
+}
+
+func (r *gatedReader) Read(p []byte) (int, error) {
+	if !r.ready {
+		r.ready = true
+		close(r.started)
+		<-r.release
+	}
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
 }

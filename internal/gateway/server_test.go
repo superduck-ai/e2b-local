@@ -2116,18 +2116,25 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 		t.Fatalf("expected octal mode 0640, got %#v", octalStat)
 	}
 
-	humanReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=human.txt&force=true&mode=644", strings.NewReader("human"))
-	humanRec := httptest.NewRecorder()
-	app.ServeHTTP(humanRec, humanReq)
-	if humanRec.Code != http.StatusOK {
-		t.Fatalf("expected human mode put status %d, got %d: %s", http.StatusOK, humanRec.Code, humanRec.Body.String())
+	prefixedReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=prefixed.txt&force=true&mode=0o644", strings.NewReader("prefixed"))
+	prefixedRec := httptest.NewRecorder()
+	app.ServeHTTP(prefixedRec, prefixedReq)
+	if prefixedRec.Code != http.StatusOK {
+		t.Fatalf("expected prefixed octal mode put status %d, got %d: %s", http.StatusOK, prefixedRec.Code, prefixedRec.Body.String())
 	}
-	var humanStat VolumeEntryStat
-	if err := json.Unmarshal(humanRec.Body.Bytes(), &humanStat); err != nil {
-		t.Fatalf("decode human put stat: %v", err)
+	var prefixedStat VolumeEntryStat
+	if err := json.Unmarshal(prefixedRec.Body.Bytes(), &prefixedStat); err != nil {
+		t.Fatalf("decode prefixed octal put stat: %v", err)
 	}
-	if humanStat.Mode != 0o644 {
-		t.Fatalf("expected human mode 0644, got %#v", humanStat)
+	if prefixedStat.Mode != 0o644 {
+		t.Fatalf("expected prefixed octal mode 0o644, got %#v", prefixedStat)
+	}
+
+	ambiguousReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=ambiguous.txt&force=true&mode=644", strings.NewReader("ambiguous"))
+	ambiguousRec := httptest.NewRecorder()
+	app.ServeHTTP(ambiguousRec, ambiguousReq)
+	if ambiguousRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unprefixed out-of-range mode status %d, got %d: %s", http.StatusBadRequest, ambiguousRec.Code, ambiguousRec.Body.String())
 	}
 
 	pathReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=/manifest.json", nil)
@@ -2162,6 +2169,13 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 		t.Fatalf("expected dir create status %d, got %d: %s", http.StatusOK, dirRec.Code, dirRec.Body.String())
 	}
 
+	deepPutReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=nested/deep.txt&force=true", strings.NewReader("deep"))
+	deepPutRec := httptest.NewRecorder()
+	app.ServeHTTP(deepPutRec, deepPutReq)
+	if deepPutRec.Code != http.StatusOK {
+		t.Fatalf("expected nested file put status %d, got %d: %s", http.StatusOK, deepPutRec.Code, deepPutRec.Body.String())
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=1", nil)
 	listRec := httptest.NewRecorder()
 	app.ServeHTTP(listRec, listReq)
@@ -2174,6 +2188,24 @@ func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
 	}
 	if len(entries) != 4 {
 		t.Fatalf("expected written files and directory entries, got %#v", entries)
+	}
+
+	deepListReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=2", nil)
+	deepListRec := httptest.NewRecorder()
+	app.ServeHTTP(deepListRec, deepListReq)
+	if deepListRec.Code != http.StatusOK {
+		t.Fatalf("expected recursive dir list status %d, got %d: %s", http.StatusOK, deepListRec.Code, deepListRec.Body.String())
+	}
+	var deepEntries []VolumeEntryStat
+	if err := json.Unmarshal(deepListRec.Body.Bytes(), &deepEntries); err != nil {
+		t.Fatalf("decode recursive dir entries: %v", err)
+	}
+	containsDeepEntry := false
+	for _, entry := range deepEntries {
+		containsDeepEntry = containsDeepEntry || entry.Path == "/nested/deep.txt"
+	}
+	if len(deepEntries) != 5 || !containsDeepEntry {
+		t.Fatalf("expected depth=2 to include nested file, got %#v", deepEntries)
 	}
 
 	missingReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=missing.json", nil)
@@ -2852,13 +2884,13 @@ func (r *recordingRuntime) ListVolumeDir(ctx context.Context, volumeID string, p
 	var entries []VolumeEntryStat
 	for key, entry := range r.volumeFiles {
 		entryVolumeID, entryPath := recordingVolumeContentKeyParts(key)
-		if entryVolumeID == volumeID && recordingVolumeContentParentMatches(prefix, entryPath) {
+		if entryVolumeID == volumeID && recordingVolumeContentWithinDepth(prefix, entryPath, depth) {
 			entries = append(entries, entry.stat)
 		}
 	}
 	for key, entry := range r.volumeDirs {
 		entryVolumeID, entryPath := recordingVolumeContentKeyParts(key)
-		if entryVolumeID == volumeID && recordingVolumeContentParentMatches(prefix, entryPath) {
+		if entryVolumeID == volumeID && recordingVolumeContentWithinDepth(prefix, entryPath, depth) {
 			entries = append(entries, entry.stat)
 		}
 	}
@@ -2910,14 +2942,18 @@ func recordingVolumeContentPath(path string) string {
 	return path
 }
 
-func recordingVolumeContentParentMatches(parent string, child string) bool {
-	if parent == "" {
-		return !strings.Contains(child, "/")
+func recordingVolumeContentWithinDepth(parent string, child string, depth int) bool {
+	if depth <= 0 {
+		depth = 1
 	}
-	if !strings.HasPrefix(child, parent+"/") {
-		return false
+	descendant := child
+	if parent != "" {
+		if !strings.HasPrefix(child, parent+"/") {
+			return false
+		}
+		descendant = strings.TrimPrefix(child, parent+"/")
 	}
-	return !strings.Contains(strings.TrimPrefix(child, parent+"/"), "/")
+	return descendant != "" && strings.Count(descendant, "/") < depth
 }
 
 func recordingVolumeContentStat(path string, entryType string, size int64, mode int) VolumeEntryStat {

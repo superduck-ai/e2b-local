@@ -161,7 +161,7 @@ backend 通过 `RegisterSandboxRuntimeFactory` 注册，所以 runtime 逻辑不
 
 ## 依赖
 
-- Go 1.24 或更新版本。
+- Go 1.25 或更新版本。
 - Docker、OrbStack 或 Apple Container，取决于选择的 runtime。
 - `envd-bin` 中对应架构的 Linux `envd` 二进制。
 

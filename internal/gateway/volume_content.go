@@ -45,7 +45,7 @@ func (a *App) handleVolumeContentFileGet(c *gin.Context) {
 		writeGatewayError(c, err, volumeErrorStatus(err))
 		return
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	c.Header("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(c.Writer, body); err != nil {
 		if c.Writer.Written() {
@@ -158,7 +158,7 @@ func volumeWriteOptionsFromQuery(c *gin.Context) (VolumeWriteOptions, error) {
 func parseVolumeMode(value string) (int, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return 0, gatewayError(http.StatusBadRequest, "mode must be a non-negative integer")
+		return 0, gatewayError(http.StatusBadRequest, "mode must be a decimal integer or an octal integer prefixed with 0 or 0o")
 	}
 
 	base := 10
@@ -172,33 +172,13 @@ func parseVolumeMode(value string) (int, error) {
 
 	parsed64, err := strconv.ParseInt(parseValue, base, 0)
 	if err != nil || parsed64 < 0 {
-		return 0, gatewayError(http.StatusBadRequest, "mode must be a non-negative integer")
+		return 0, gatewayError(http.StatusBadRequest, "mode must be a decimal integer or an octal integer prefixed with 0 or 0o")
 	}
 	parsed := int(parsed64)
 	if parsed <= 0o777 {
 		return parsed, nil
 	}
-
-	if base == 10 && isOctalDigits(value) {
-		octal, err := strconv.ParseInt(value, 8, 0)
-		if err == nil && octal >= 0 && octal <= 0o777 {
-			return int(octal), nil
-		}
-	}
-
 	return 0, gatewayError(http.StatusBadRequest, "mode must be between 0 and 0777")
-}
-
-func isOctalDigits(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '7' {
-			return false
-		}
-	}
-	return true
 }
 
 func writeVolumeContentError(c *gin.Context, err error, fallback int) {
