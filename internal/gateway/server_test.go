@@ -23,6 +23,7 @@ import (
 	"e2b-local/internal/e2bapi"
 
 	"github.com/docker/docker/errdefs"
+	sdkvolume "github.com/superduck-ai/e2b-go-sdk/volume"
 )
 
 func newTestApp(t *testing.T, cfg Config) http.Handler {
@@ -2077,6 +2078,362 @@ func TestVolumeEndpointsUseRuntime(t *testing.T) {
 	}
 }
 
+func TestDeleteVolumePreservesConflictStatus(t *testing.T) {
+	runtime := &recordingRuntime{
+		volumes:         []RuntimeVolume{{VolumeID: "test-volume", Name: "test-volume"}},
+		deleteVolumeErr: gatewayError(http.StatusConflict, "volume test-volume is in use"),
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/volumes/test-volume", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected delete status %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	if len(runtime.deletedVolumeIDs) != 0 {
+		t.Fatalf("expected volume deletion to be rejected, got %#v", runtime.deletedVolumeIDs)
+	}
+}
+
+func TestVolumeContentEndpointsUseRuntime(t *testing.T) {
+	runtime := &recordingRuntime{}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	runtime.volumes = append(runtime.volumes, RuntimeVolume{VolumeID: "test-volume", Name: "test-volume"})
+
+	putReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=manifest.json&force=true&mode=420", strings.NewReader(`{"skills":[]}`))
+	putRec := httptest.NewRecorder()
+	app.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("expected put file status %d, got %d: %s", http.StatusOK, putRec.Code, putRec.Body.String())
+	}
+
+	var putStat VolumeEntryStat
+	if err := json.Unmarshal(putRec.Body.Bytes(), &putStat); err != nil {
+		t.Fatalf("decode put stat: %v", err)
+	}
+	if putStat.Type != "file" || putStat.Path != "/manifest.json" || putStat.Mode != 420 {
+		t.Fatalf("unexpected put stat: %#v", putStat)
+	}
+
+	octalReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=octal.txt&force=true&mode=0640", strings.NewReader("octal"))
+	octalRec := httptest.NewRecorder()
+	app.ServeHTTP(octalRec, octalReq)
+	if octalRec.Code != http.StatusOK {
+		t.Fatalf("expected octal mode put status %d, got %d: %s", http.StatusOK, octalRec.Code, octalRec.Body.String())
+	}
+	var octalStat VolumeEntryStat
+	if err := json.Unmarshal(octalRec.Body.Bytes(), &octalStat); err != nil {
+		t.Fatalf("decode octal put stat: %v", err)
+	}
+	if octalStat.Mode != 0o640 {
+		t.Fatalf("expected octal mode 0640, got %#v", octalStat)
+	}
+
+	prefixedReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=prefixed.txt&force=true&mode=0o644", strings.NewReader("prefixed"))
+	prefixedRec := httptest.NewRecorder()
+	app.ServeHTTP(prefixedRec, prefixedReq)
+	if prefixedRec.Code != http.StatusOK {
+		t.Fatalf("expected prefixed octal mode put status %d, got %d: %s", http.StatusOK, prefixedRec.Code, prefixedRec.Body.String())
+	}
+	var prefixedStat VolumeEntryStat
+	if err := json.Unmarshal(prefixedRec.Body.Bytes(), &prefixedStat); err != nil {
+		t.Fatalf("decode prefixed octal put stat: %v", err)
+	}
+	if prefixedStat.Mode != 0o644 {
+		t.Fatalf("expected prefixed octal mode 0o644, got %#v", prefixedStat)
+	}
+
+	ambiguousReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=ambiguous.txt&force=true&mode=644", strings.NewReader("ambiguous"))
+	ambiguousRec := httptest.NewRecorder()
+	app.ServeHTTP(ambiguousRec, ambiguousReq)
+	if ambiguousRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unprefixed out-of-range mode status %d, got %d: %s", http.StatusBadRequest, ambiguousRec.Code, ambiguousRec.Body.String())
+	}
+
+	pathReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=/manifest.json", nil)
+	pathRec := httptest.NewRecorder()
+	app.ServeHTTP(pathRec, pathReq)
+	if pathRec.Code != http.StatusOK {
+		t.Fatalf("expected path status %d, got %d: %s", http.StatusOK, pathRec.Code, pathRec.Body.String())
+	}
+
+	var pathStat VolumeEntryStat
+	if err := json.Unmarshal(pathRec.Body.Bytes(), &pathStat); err != nil {
+		t.Fatalf("decode path stat: %v", err)
+	}
+	if pathStat.Path != "/manifest.json" || pathStat.Size != int64(len(`{"skills":[]}`)) {
+		t.Fatalf("unexpected path stat: %#v", pathStat)
+	}
+
+	fileReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=manifest.json", nil)
+	fileRec := httptest.NewRecorder()
+	app.ServeHTTP(fileRec, fileReq)
+	if fileRec.Code != http.StatusOK {
+		t.Fatalf("expected file status %d, got %d: %s", http.StatusOK, fileRec.Code, fileRec.Body.String())
+	}
+	if fileRec.Body.String() != `{"skills":[]}` {
+		t.Fatalf("unexpected file body %q", fileRec.Body.String())
+	}
+
+	dirReq := httptest.NewRequest(http.MethodPost, "/volumecontent/test-volume/dir?path=nested&mode=493", nil)
+	dirRec := httptest.NewRecorder()
+	app.ServeHTTP(dirRec, dirReq)
+	if dirRec.Code != http.StatusOK {
+		t.Fatalf("expected dir create status %d, got %d: %s", http.StatusOK, dirRec.Code, dirRec.Body.String())
+	}
+
+	deepPutReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=nested/deep.txt&force=true", strings.NewReader("deep"))
+	deepPutRec := httptest.NewRecorder()
+	app.ServeHTTP(deepPutRec, deepPutReq)
+	if deepPutRec.Code != http.StatusOK {
+		t.Fatalf("expected nested file put status %d, got %d: %s", http.StatusOK, deepPutRec.Code, deepPutRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=1", nil)
+	listRec := httptest.NewRecorder()
+	app.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected dir list status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+	var entries []VolumeEntryStat
+	if err := json.Unmarshal(listRec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode dir entries: %v", err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("expected written files and directory entries, got %#v", entries)
+	}
+
+	deepListReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=2", nil)
+	deepListRec := httptest.NewRecorder()
+	app.ServeHTTP(deepListRec, deepListReq)
+	if deepListRec.Code != http.StatusOK {
+		t.Fatalf("expected recursive dir list status %d, got %d: %s", http.StatusOK, deepListRec.Code, deepListRec.Body.String())
+	}
+	var deepEntries []VolumeEntryStat
+	if err := json.Unmarshal(deepListRec.Body.Bytes(), &deepEntries); err != nil {
+		t.Fatalf("decode recursive dir entries: %v", err)
+	}
+	containsDeepEntry := false
+	for _, entry := range deepEntries {
+		containsDeepEntry = containsDeepEntry || entry.Path == "/nested/deep.txt"
+	}
+	if len(deepEntries) != 5 || !containsDeepEntry {
+		t.Fatalf("expected depth=2 to include nested file, got %#v", deepEntries)
+	}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=missing.json", nil)
+	missingRec := httptest.NewRecorder()
+	app.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing path status %d, got %d: %s", http.StatusNotFound, missingRec.Code, missingRec.Body.String())
+	}
+
+	invalidReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=manifest.json&force=not-bool", strings.NewReader("x"))
+	invalidRec := httptest.NewRecorder()
+	app.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid force status %d, got %d: %s", http.StatusBadRequest, invalidRec.Code, invalidRec.Body.String())
+	}
+
+	missingPutReq := httptest.NewRequest(http.MethodPut, "/volumecontent/missing/file?path=manifest.json", strings.NewReader("x"))
+	missingPutRec := httptest.NewRecorder()
+	app.ServeHTTP(missingPutRec, missingPutReq)
+	if missingPutRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing volume put status %d, got %d: %s", http.StatusNotFound, missingPutRec.Code, missingPutRec.Body.String())
+	}
+
+	missingDirReq := httptest.NewRequest(http.MethodPost, "/volumecontent/missing/dir?path=nested", nil)
+	missingDirRec := httptest.NewRecorder()
+	app.ServeHTTP(missingDirRec, missingDirReq)
+	if missingDirRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing volume dir status %d, got %d: %s", http.StatusNotFound, missingDirRec.Code, missingDirRec.Body.String())
+	}
+
+	oldMaxVolumeFileUploadBytes := maxVolumeFileUploadBytes
+	maxVolumeFileUploadBytes = 4
+	t.Cleanup(func() {
+		maxVolumeFileUploadBytes = oldMaxVolumeFileUploadBytes
+	})
+	tooLargeReq := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path=too-large.txt&force=true", strings.NewReader("12345"))
+	tooLargeRec := httptest.NewRecorder()
+	app.ServeHTTP(tooLargeRec, tooLargeReq)
+	if tooLargeRec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected too large upload status %d, got %d: %s", http.StatusRequestEntityTooLarge, tooLargeRec.Code, tooLargeRec.Body.String())
+	}
+}
+
+func TestVolumeContentEndpointsPreservePathWhitespace(t *testing.T) {
+	runtime := &recordingRuntime{
+		volumes: []RuntimeVolume{{VolumeID: "test-volume", Name: "test-volume"}},
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	for _, request := range []struct {
+		path    string
+		content string
+	}{
+		{path: "report.txt", content: "plain"},
+		{path: "report.txt%20", content: "trailing-space"},
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/volumecontent/test-volume/file?path="+request.path+"&force=true", strings.NewReader(request.content))
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("write %q status %d: %s", request.path, rec.Code, rec.Body.String())
+		}
+	}
+
+	fileReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=report.txt%20", nil)
+	fileRec := httptest.NewRecorder()
+	app.ServeHTTP(fileRec, fileReq)
+	if fileRec.Code != http.StatusOK || fileRec.Body.String() != "trailing-space" {
+		t.Fatalf("expected trailing-space file, got status %d body %q", fileRec.Code, fileRec.Body.String())
+	}
+
+	plainReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=report.txt", nil)
+	plainRec := httptest.NewRecorder()
+	app.ServeHTTP(plainRec, plainReq)
+	if plainRec.Code != http.StatusOK || plainRec.Body.String() != "plain" {
+		t.Fatalf("expected plain file to remain distinct, got status %d body %q", plainRec.Code, plainRec.Body.String())
+	}
+
+	statReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/path?path=report.txt%20", nil)
+	statRec := httptest.NewRecorder()
+	app.ServeHTTP(statRec, statReq)
+	if statRec.Code != http.StatusOK {
+		t.Fatalf("stat trailing-space file status %d: %s", statRec.Code, statRec.Body.String())
+	}
+	var stat VolumeEntryStat
+	if err := json.Unmarshal(statRec.Body.Bytes(), &stat); err != nil {
+		t.Fatalf("decode trailing-space stat: %v", err)
+	}
+	if stat.Name != "report.txt " || stat.Path != "/report.txt " {
+		t.Fatalf("stat changed trailing-space path: %#v", stat)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/dir?path=/&depth=1", nil)
+	listRec := httptest.NewRecorder()
+	app.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list whitespace-sensitive files status %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var entries []VolumeEntryStat
+	if err := json.Unmarshal(listRec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode whitespace-sensitive entries: %v", err)
+	}
+	if len(entries) != 2 || entries[0].Path != "/report.txt" || entries[1].Path != "/report.txt " {
+		t.Fatalf("expected distinct whitespace-sensitive entries, got %#v", entries)
+	}
+}
+
+func TestVolumeContentGetEndpointsPreserveInternalErrors(t *testing.T) {
+	runtime := &volumeContentErrorRuntime{err: errors.New("volume content failed")}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "path", method: http.MethodGet, path: "/volumecontent/test-volume/path?path=manifest.json"},
+		{name: "file", method: http.MethodGet, path: "/volumecontent/test-volume/file?path=manifest.json"},
+		{name: "dir", method: http.MethodGet, path: "/volumecontent/test-volume/dir?path=/"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusInternalServerError, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestVolumeContentFileGetDoesNotAppendJSONAfterStreamingFailure(t *testing.T) {
+	runtime := &volumeContentErrorRuntime{
+		body: &gatewayFailingReadCloser{data: []byte("partial")},
+	}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/volumecontent/test-volume/file?path=manifest.json", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected committed stream status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "partial" {
+		t.Fatalf("expected only partial file bytes, got %q", rec.Body.String())
+	}
+}
+
+func TestGoSDKVolumeContentFlow(t *testing.T) {
+	runtime := &recordingRuntime{}
+	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	server := httptest.NewServer(app)
+	defer server.Close()
+
+	ctx := context.Background()
+	vol, err := sdkvolume.Create(ctx, "sdk-volume", &sdkvolume.ConnectionOpts{
+		ApiKey: "e2b_0000000000000000000000000000000000000000",
+		ApiUrl: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("sdk create volume: %v", err)
+	}
+
+	force := true
+	if _, err := vol.WriteFile(ctx, "manifest.json", `{"skills":[]}`, &sdkvolume.VolumeWriteOptions{Force: &force}); err != nil {
+		t.Fatalf("sdk write file: %v", err)
+	}
+
+	readValue, err := vol.ReadFile(ctx, "/manifest.json", nil)
+	if err != nil {
+		t.Fatalf("sdk read file: %v", err)
+	}
+	if readValue != `{"skills":[]}` {
+		t.Fatalf("unexpected sdk read value %#v", readValue)
+	}
+
+	exists, err := vol.Exists(ctx, "manifest.json", nil)
+	if err != nil {
+		t.Fatalf("sdk exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected manifest.json to exist")
+	}
+
+	exists, err = vol.Exists(ctx, "missing.json", nil)
+	if err != nil {
+		t.Fatalf("sdk missing exists: %v", err)
+	}
+	if exists {
+		t.Fatal("expected missing.json not to exist")
+	}
+}
+
 func TestDockerImageReferenceRequiresTagOrDigest(t *testing.T) {
 	tests := []struct {
 		ref  string
@@ -2331,8 +2688,11 @@ type recordingRuntime struct {
 	snapshots           []e2bapi.SnapshotInfo
 	templates           []SandboxRuntimeTemplate
 	volumes             []RuntimeVolume
+	volumeFiles         map[string]recordingVolumeContentEntry
+	volumeDirs          map[string]recordingVolumeContentEntry
 	createRuntimeInfo   SandboxRuntimeInfo
 	deletedVolumeIDs    []string
+	deleteVolumeErr     error
 	inspectCalls        []SandboxRuntimeInfo
 	inspectResults      map[string]SandboxRuntimeInspection
 	inspectErr          error
@@ -2357,9 +2717,20 @@ type recordingTemplateBuilderRuntime struct {
 	startBuildReturned  chan struct{}
 }
 
+type volumeContentErrorRuntime struct {
+	recordingRuntime
+	err  error
+	body io.ReadCloser
+}
+
 type recordingSnapshotCreateCall struct {
 	Record  SandboxRecord
 	Request e2bapi.PostSandboxesSandboxIDSnapshotsJSONBody
+}
+
+type recordingVolumeContentEntry struct {
+	stat VolumeEntryStat
+	data []byte
 }
 
 func (r *recordingRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCreateRequest) (SandboxRuntimeInfo, error) {
@@ -2520,6 +2891,9 @@ func (r *recordingRuntime) GetVolume(ctx context.Context, volumeID string) (Runt
 }
 
 func (r *recordingRuntime) DeleteVolume(ctx context.Context, volumeID string) (bool, error) {
+	if r.deleteVolumeErr != nil {
+		return false, r.deleteVolumeErr
+	}
 	for i, volume := range r.volumes {
 		if volume.VolumeID == volumeID {
 			r.volumes = append(r.volumes[:i], r.volumes[i+1:]...)
@@ -2528,6 +2902,189 @@ func (r *recordingRuntime) DeleteVolume(ctx context.Context, volumeID string) (b
 		}
 	}
 	return false, nil
+}
+
+func (r *recordingRuntime) GetVolumePathInfo(ctx context.Context, volumeID string, path string) (VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return VolumeEntryStat{}, err
+	}
+	key := recordingVolumeContentKey(volumeID, path)
+	if key == recordingVolumeContentKey(volumeID, "") {
+		return recordingVolumeContentStat("", "directory", 0, 0o755), nil
+	}
+	if entry, ok := r.volumeFiles[key]; ok {
+		return entry.stat, nil
+	}
+	if entry, ok := r.volumeDirs[key]; ok {
+		return entry.stat, nil
+	}
+	return VolumeEntryStat{}, errdefs.NotFound(errors.New("volume path not found"))
+}
+
+func (r *volumeContentErrorRuntime) GetVolumePathInfo(ctx context.Context, volumeID string, path string) (VolumeEntryStat, error) {
+	if r.err != nil {
+		return VolumeEntryStat{}, r.err
+	}
+	return r.recordingRuntime.GetVolumePathInfo(ctx, volumeID, path)
+}
+
+func (r *recordingRuntime) ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return nil, err
+	}
+	entry, ok := r.volumeFiles[recordingVolumeContentKey(volumeID, path)]
+	if !ok {
+		return nil, errdefs.NotFound(errors.New("volume file not found"))
+	}
+	return io.NopCloser(bytes.NewReader(entry.data)), nil
+}
+
+func (r *volumeContentErrorRuntime) ReadVolumeFile(ctx context.Context, volumeID string, path string) (io.ReadCloser, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.body != nil {
+		return r.body, nil
+	}
+	return r.recordingRuntime.ReadVolumeFile(ctx, volumeID, path)
+}
+
+func (r *recordingRuntime) WriteVolumeFile(ctx context.Context, volumeID string, path string, body io.Reader, opts VolumeWriteOptions) (VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return VolumeEntryStat{}, err
+	}
+	if r.volumeFiles == nil {
+		r.volumeFiles = map[string]recordingVolumeContentEntry{}
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return VolumeEntryStat{}, err
+	}
+	mode := 0o644
+	if opts.Mode != nil {
+		mode = *opts.Mode
+	}
+	stat := recordingVolumeContentStat(path, "file", int64(len(data)), mode)
+	r.volumeFiles[recordingVolumeContentKey(volumeID, path)] = recordingVolumeContentEntry{stat: stat, data: data}
+	return stat, nil
+}
+
+func (r *recordingRuntime) ListVolumeDir(ctx context.Context, volumeID string, path string, depth int) ([]VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return nil, err
+	}
+	prefix := recordingVolumeContentPath(path)
+	var entries []VolumeEntryStat
+	for key, entry := range r.volumeFiles {
+		entryVolumeID, entryPath := recordingVolumeContentKeyParts(key)
+		if entryVolumeID == volumeID && recordingVolumeContentWithinDepth(prefix, entryPath, depth) {
+			entries = append(entries, entry.stat)
+		}
+	}
+	for key, entry := range r.volumeDirs {
+		entryVolumeID, entryPath := recordingVolumeContentKeyParts(key)
+		if entryVolumeID == volumeID && recordingVolumeContentWithinDepth(prefix, entryPath, depth) {
+			entries = append(entries, entry.stat)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Path < entries[j].Path
+	})
+	return entries, nil
+}
+
+func (r *volumeContentErrorRuntime) ListVolumeDir(ctx context.Context, volumeID string, path string, depth int) ([]VolumeEntryStat, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.recordingRuntime.ListVolumeDir(ctx, volumeID, path, depth)
+}
+
+func (r *recordingRuntime) CreateVolumeDir(ctx context.Context, volumeID string, path string, opts VolumeWriteOptions) (VolumeEntryStat, error) {
+	if _, err := r.GetVolume(ctx, volumeID); err != nil {
+		return VolumeEntryStat{}, err
+	}
+	if r.volumeDirs == nil {
+		r.volumeDirs = map[string]recordingVolumeContentEntry{}
+	}
+	mode := 0o755
+	if opts.Mode != nil {
+		mode = *opts.Mode
+	}
+	stat := recordingVolumeContentStat(path, "directory", 0, mode)
+	r.volumeDirs[recordingVolumeContentKey(volumeID, path)] = recordingVolumeContentEntry{stat: stat}
+	return stat, nil
+}
+
+func recordingVolumeContentKey(volumeID string, path string) string {
+	return volumeID + "\x00" + recordingVolumeContentPath(path)
+}
+
+func recordingVolumeContentKeyParts(key string) (string, string) {
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+func recordingVolumeContentPath(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	return path
+}
+
+func recordingVolumeContentWithinDepth(parent string, child string, depth int) bool {
+	if depth <= 0 {
+		depth = 1
+	}
+	descendant := child
+	if parent != "" {
+		if !strings.HasPrefix(child, parent+"/") {
+			return false
+		}
+		descendant = strings.TrimPrefix(child, parent+"/")
+	}
+	return descendant != "" && strings.Count(descendant, "/") < depth
+}
+
+func recordingVolumeContentStat(path string, entryType string, size int64, mode int) VolumeEntryStat {
+	cleanPath := recordingVolumeContentPath(path)
+	name := cleanPath
+	if name == "" {
+		name = "/"
+	} else if index := strings.LastIndex(name, "/"); index >= 0 {
+		name = name[index+1:]
+	}
+	now := time.Now().UTC()
+	return VolumeEntryStat{
+		Atime: now,
+		Mtime: now,
+		Ctime: now,
+		Type:  entryType,
+		Name:  name,
+		Path:  "/" + cleanPath,
+		Size:  size,
+		Mode:  mode,
+	}
+}
+
+type gatewayFailingReadCloser struct {
+	data []byte
+	done bool
+}
+
+func (r *gatewayFailingReadCloser) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, errors.New("stream failed")
+}
+
+func (r *gatewayFailingReadCloser) Close() error {
+	return nil
 }
 
 func waitForSignal(t *testing.T, ch <-chan struct{}, name string) {

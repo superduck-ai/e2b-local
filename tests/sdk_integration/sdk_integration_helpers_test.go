@@ -3,7 +3,9 @@
 package sdk_integration_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -20,8 +22,10 @@ import (
 	gateway "e2b-local/internal/gateway"
 	"e2b-local/internal/orbctl"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 const testAPIKey = "e2b_0000000000000000000000000000000000000000"
@@ -146,7 +150,21 @@ func goSDKTemplateID(t *testing.T, cfg gateway.Config) string {
 	t.Helper()
 
 	if cfg.Runtime.Type == "docker" {
-		return dockerTemplateName(dockerIntegrationImageRef(t, cfg))
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		runtime, err := gateway.NewSandboxRuntime(cfg, log.New(io.Discard, "", 0))
+		if err != nil {
+			t.Skipf("docker runtime is unavailable: %v", err)
+		}
+		templates, err := runtime.ListTemplates(ctx)
+		if err != nil {
+			t.Skipf("list docker templates: %v", err)
+		}
+		if len(templates) == 0 {
+			t.Skip("no tagged docker images are available as templates")
+		}
+		return templates[0].TemplateID
 	}
 	if cfg.Runtime.Type == "orbstack" {
 		if templateID := orbstackConfiguredTemplateID(cfg); templateID != "" {
@@ -216,6 +234,45 @@ func dockerIntegrationEnvdBinary(t *testing.T, cfg gateway.Config, cli *client.C
 		t.Skipf("docker image architecture %q has no bundled envd binary", inspect.Architecture)
 		return ""
 	}
+}
+
+func dockerExecOutput(t *testing.T, cfg gateway.Config, ctx context.Context, containerName string, cmd []string) (string, error) {
+	t.Helper()
+
+	cli, err := client.NewClientWithOpts(
+		client.WithHost(cfg.Docker.Host),
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create docker client: %w", err)
+	}
+	execResp, err := cli.ContainerExecCreate(ctx, containerName, container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create docker exec: %w", err)
+	}
+	attach, err := cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return "", fmt.Errorf("attach docker exec: %w", err)
+	}
+	defer attach.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
+		return "", fmt.Errorf("read docker exec output: %w", err)
+	}
+	inspect, err := cli.ContainerExecInspect(ctx, execResp.ID)
+	if err != nil {
+		return "", fmt.Errorf("inspect docker exec: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return stdout.String(), fmt.Errorf("exit code %d: %s", inspect.ExitCode, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
 }
 
 func normalizeDockerArchitecture(architecture string) string {

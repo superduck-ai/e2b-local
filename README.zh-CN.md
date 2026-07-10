@@ -127,7 +127,7 @@ func main() {
 
 调用方需要知道的 runtime 差异：
 
-- Docker volume 使用 Docker 原生 named volume，返回的 `volumeID` 就是 Docker volume name。
+- Docker volume 是 `docker.volume_host_path` 下由 e2b-local 管理的本地目录，创建 sandbox 时会按请求路径 bind mount 进去。
 - OrbStack volume 是 `orbstack.volume_host_path` 下的本地目录，会按需 mount 到 sandbox VM。
 - Apple Container volume 使用 Apple Container 原生 named volume，并在创建 sandbox 时按请求挂载。
 - SDK 在创建 sandbox 后会收到该 sandbox 的直连 `envdURL`，所以 commands、filesystem、PTY 和 streaming 调用会直接访问 sandbox runtime。
@@ -161,7 +161,7 @@ backend 通过 `RegisterSandboxRuntimeFactory` 注册，所以 runtime 逻辑不
 
 ## 依赖
 
-- Go 1.24 或更新版本。
+- Go 1.25 或更新版本。
 - Docker、OrbStack 或 Apple Container，取决于选择的 runtime。
 - `envd-bin` 中对应架构的 Linux `envd` 二进制。
 
@@ -207,6 +207,7 @@ docker:
 - `traffic.advertised_host` 是端口查询接口返回给用户的 IP 或 host。留空时 gateway 会在启动时自动探测。`traffic.interface` 可以强制使用 `en0` 这类宿主机网卡；否则 macOS 回退到 UDP 探测，Linux 会先尝试 netlink 路由表，再回退到 UDP 探测。
 - `docker.platform` 是可选 override。留空时 Docker 自己选择镜像平台，gateway 再 inspect 选中的镜像。
 - `docker.envd_binary` 是可选 override。留空时 gateway 会按选中镜像架构自动选择 `envd-bin/envd-linux-amd64` 或 `envd-bin/envd-linux-arm64`；显式设置时支持相对配置文件路径。
+- `docker.volume_host_path` 存放 Docker runtime 管理的本地 volume 目录，并支持 `~` 和相对配置文件路径。
 - `docker.published_ports` 会把 `5000` 这类业务端口发布到每个 sandbox 的动态宿主机端口；`docker.published_host_ip` 默认是 `0.0.0.0`，便于内网访问。
 - `orbstack.envd_binary` 可以写相对路径，gateway 会先解析再复制进 VM。
 - `orbstack.volume_host_path` 存放 macOS 本地 volume 目录，并支持 `~` 和相对配置文件路径。
@@ -291,7 +292,7 @@ Docker runtime 下：
 - Template 会从本机已有 tag 的 Docker images 解析，也可以在 `templateID` 中直接传完整 image reference；对应镜像必须已经存在本机。
 - gateway 会把非敏感 runtime metadata 写入 `e2b.local.*` container label，进程重启后可恢复 running/paused sandbox。
 - 自动选择或显式配置的 envd binary 会挂载为容器内 `/usr/local/bin/envd`。
-- 请求里的 E2B volume 使用 Docker 原生 named volume。
+- 请求里的 E2B volume 是 `docker.volume_host_path` 下的本地目录，并会 bind mount 到 sandbox 容器里。
 - Sandbox response 会返回 Docker runtime 分配的直连 `envdURL`。
 - 通过 `docker.published_ports` 或 Dockerfile `EXPOSE` 声明的业务端口，可以用 `GET /sandboxes/{sandboxID}/ports/{port}` 查询；响应里包含 `url` 和 `wsUrl`，例如 `http://192.168.1.10:38123`。
 

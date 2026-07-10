@@ -101,6 +101,11 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 		app.GetTemplates(c, e2bapi.GetTemplatesParams{TeamID: teamID})
 	})
 	router.GET("/sandboxes/:sandboxID/ports/:port", app.handleGetSandboxPort)
+	router.GET("/volumecontent/:volumeID/path", app.handleVolumeContentPathGet)
+	router.GET("/volumecontent/:volumeID/file", app.handleVolumeContentFileGet)
+	router.PUT("/volumecontent/:volumeID/file", app.handleVolumeContentFilePut)
+	router.GET("/volumecontent/:volumeID/dir", app.handleVolumeContentDirGet)
+	router.POST("/volumecontent/:volumeID/dir", app.handleVolumeContentDirPost)
 	router.PUT("/_e2b/template-files/:templateID/:hash", app.handleTemplateFileUpload)
 	router.NoRoute(app.handleNoRoute)
 
@@ -317,8 +322,15 @@ func sandboxPortResponse(mapping SandboxPortMapping, host string) SandboxPortRes
 	}
 }
 func volumeErrorStatus(err error) int {
+	// 先保留 runtime 明确给出的 HTTP 语义，再映射 Docker 原生错误。
+	if status := gatewayErrorStatus(err, 0); status != 0 {
+		return status
+	}
 	if errdefs.IsNotFound(err) {
 		return http.StatusNotFound
+	}
+	if errdefs.IsConflict(err) {
+		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
 }

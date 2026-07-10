@@ -58,7 +58,7 @@ flowchart LR
 
   subgraph DockerRuntime["Docker"]
     Docker --> Containers["Sandbox containers<br/>from local images"]
-    Docker --> DockerVolumes["Docker named volumes"]
+    Docker --> DockerVolumes["Host volume directories<br/>docker.volume_host_path"]
   end
 
   subgraph OrbRuntime["OrbStack"]
@@ -173,7 +173,7 @@ func main() {
 
 Runtime notes for callers:
 
-- Docker volumes are Docker native named volumes. The returned `volumeID` is the Docker volume name.
+- Docker volumes are managed local directories under `docker.volume_host_path`; sandbox creation bind-mounts them at the requested paths.
 - OrbStack volumes are directories under `orbstack.volume_host_path` and are mounted into sandbox VMs on demand.
 - Apple Container volumes are Apple Container native named volumes and are mounted during sandbox creation.
 - The SDK receives a direct `envdURL` for each sandbox, so commands, filesystem, PTY, and streaming calls talk directly to the sandbox runtime after creation.
@@ -207,7 +207,7 @@ Backends register themselves through `RegisterSandboxRuntimeFactory`, so runtime
 
 ## Requirements
 
-- Go 1.24 or newer.
+- Go 1.25 or newer.
 - Docker, OrbStack, or Apple Container, depending on the selected runtime.
 - A compatible Linux `envd` binary from `envd-bin`.
 
@@ -254,6 +254,7 @@ Important fields:
 - `traffic.advertised_host` is the IP or host returned by sandbox port lookups. Empty means the gateway detects it on startup. `traffic.interface` can force a host interface such as `en0`; otherwise macOS falls back to UDP probing, while Linux tries netlink route detection before UDP probing.
 - `docker.platform` is optional. Empty means Docker chooses the image platform, then the gateway inspects the selected image.
 - `docker.envd_binary` is optional. Empty means the gateway picks `envd-bin/envd-linux-amd64` or `envd-bin/envd-linux-arm64` from the selected image architecture. When set, it can be relative to the config file.
+- `docker.volume_host_path` stores managed local volume directories and supports `~` and config-relative paths.
 - `docker.published_ports` publishes business ports such as `5000` from every sandbox on dynamic host ports. `docker.published_host_ip` defaults to `0.0.0.0` for LAN access.
 - `orbstack.envd_binary` can be relative to the config file. The gateway copies it into each VM before installing the service.
 - `orbstack.volume_host_path` stores local volume directories on macOS and supports `~` and config-relative paths.
@@ -338,7 +339,7 @@ In Docker runtime:
 - Templates are resolved from local tagged Docker images, or from a full image reference passed as `templateID`. The image must already exist locally.
 - The gateway stores non-sensitive runtime metadata in `e2b.local.*` container labels and restores running/paused sandboxes after process restart.
 - The selected envd binary is mounted at `/usr/local/bin/envd`.
-- Requested E2B volumes use Docker native named volumes.
+- Requested E2B volumes are local directories under `docker.volume_host_path` and are bind-mounted into sandbox containers.
 - Sandbox responses return the direct runtime `envdURL` assigned by Docker.
 - Business ports declared with `docker.published_ports` or Dockerfile `EXPOSE` can be resolved with `GET /sandboxes/{sandboxID}/ports/{port}`. The response includes `url` and `wsUrl`, for example `http://192.168.1.10:38123`.
 
