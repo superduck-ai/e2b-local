@@ -24,6 +24,8 @@ docker:
   container_name_prefix: "e2b-envd-"
   # Optional envd override. Empty means choose envd-bin/envd-linux-amd64 or envd-bin/envd-linux-arm64 from the image architecture.
   # envd_binary: "envd-bin/envd-linux-amd64"
+  # Enabled by default. Set false to withhold /dev/fuse and SYS_ADMIN from sandboxes.
+  enable_fuse: true
   # envd runs on container port 49983; Docker assigns a dynamic localhost host port per sandbox.
   # Business ports can be published on dynamic host ports and queried through
   # GET /sandboxes/{sandboxID}/ports/{port}.

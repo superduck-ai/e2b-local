@@ -60,6 +60,8 @@ const dockerEnvdHostIP = "127.0.0.1"
 const dockerPublishedHostIP = "0.0.0.0"
 const dockerEnvdBinaryAMD64 = "envd-bin/envd-linux-amd64"
 const dockerEnvdBinaryARM64 = "envd-bin/envd-linux-arm64"
+const dockerFUSECapability = "SYS_ADMIN"
+const dockerFUSEDevicePath = "/dev/fuse"
 const defaultSandboxTimeoutSeconds = gateway.DefaultSandboxTimeoutSeconds
 const maxSandboxListLimit = gateway.MaxSandboxListLimit
 
@@ -242,6 +244,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 	}
 	labelReq := req
 	labelReq.VolumeMounts = volumeMounts
+	fuseCapabilities, fuseDevices := dockerFUSEPermissions(r.cfg.EnableFUSE)
 
 	resp, err := r.client.ContainerCreate(
 		ctx,
@@ -258,6 +261,10 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 			Init:         &initEnabled,
 			PortBindings: portBindings,
 			Mounts:       mounts,
+			CapAdd:       fuseCapabilities,
+			Resources: container.Resources{
+				Devices: fuseDevices,
+			},
 		},
 		&network.NetworkingConfig{},
 		containerCreatePlatform(selectedPlatform),
@@ -312,6 +319,18 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 	)
 
 	return info, nil
+}
+
+func dockerFUSEPermissions(enabled bool) ([]string, []container.DeviceMapping) {
+	if !enabled {
+		return nil, nil
+	}
+
+	return []string{dockerFUSECapability}, []container.DeviceMapping{{
+		PathOnHost:        dockerFUSEDevicePath,
+		PathInContainer:   dockerFUSEDevicePath,
+		CgroupPermissions: "rwm",
+	}}
 }
 
 func (r *DockerRuntime) ListTemplates(ctx context.Context) ([]SandboxRuntimeTemplate, error) {

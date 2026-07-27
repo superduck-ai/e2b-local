@@ -40,6 +40,9 @@ docker:
   # Relative paths are resolved from this config file when explicitly set.
   # envd_binary: "envd-bin/envd-linux-amd64"
 
+  # Enabled by default. Set false to withhold /dev/fuse and SYS_ADMIN from sandboxes.
+  enable_fuse: true
+
   # envd runs on container port 49983; Docker assigns a dynamic localhost host port per sandbox.
 
   # Business ports to publish from every sandbox container. Docker assigns a

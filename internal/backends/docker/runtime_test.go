@@ -49,6 +49,29 @@ func TestDockerRuntimeContainerCommandStartsEnvdDirectly(t *testing.T) {
 	}
 }
 
+func TestDockerFUSEPermissionsStayDisabledWhenConfiguredOff(t *testing.T) {
+	capabilities, devices := dockerFUSEPermissions(false)
+
+	if len(capabilities) != 0 || len(devices) != 0 {
+		t.Fatalf("expected no FUSE permissions when disabled, got capabilities=%#v devices=%#v", capabilities, devices)
+	}
+}
+
+func TestDockerFUSEPermissionsExposeDeviceAndMountCapability(t *testing.T) {
+	capabilities, devices := dockerFUSEPermissions(true)
+
+	if !reflect.DeepEqual(capabilities, []string{dockerFUSECapability}) {
+		t.Fatalf("expected FUSE capability, got %#v", capabilities)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected one FUSE device mapping, got %#v", devices)
+	}
+	device := devices[0]
+	if device.PathOnHost != dockerFUSEDevicePath || device.PathInContainer != dockerFUSEDevicePath || device.CgroupPermissions != "rwm" {
+		t.Fatalf("unexpected FUSE device mapping: %#v", device)
+	}
+}
+
 func TestDockerHostSupportsLocalBindMounts(t *testing.T) {
 	for _, tt := range []struct {
 		host string

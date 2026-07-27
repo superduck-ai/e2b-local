@@ -30,6 +30,9 @@ func TestLoadConfigEmptyPathUsesDefaults(t *testing.T) {
 	if cfg.Docker.EnvdBinary != "" {
 		t.Fatalf("expected docker envd binary default to be empty, got %q", cfg.Docker.EnvdBinary)
 	}
+	if !cfg.Docker.EnableFUSE {
+		t.Fatal("expected docker FUSE support to be enabled by default")
+	}
 	if cfg.Docker.VolumeHostPath == "" || !filepath.IsAbs(cfg.Docker.VolumeHostPath) {
 		t.Fatalf("expected docker volume host path default to be absolute, got %q", cfg.Docker.VolumeHostPath)
 	}
@@ -98,6 +101,7 @@ docker:
   platform: "linux/amd64"
   container_name_prefix: "e2b-envd-"
   envd_binary: "/tmp/e2b-local-envd"
+  enable_fuse: false
   published_ports: [5000, 5001]
   published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
@@ -122,6 +126,9 @@ docker:
 
 	if cfg.Docker.Platform != "linux/amd64" {
 		t.Fatalf("expected docker platform override, got %q", cfg.Docker.Platform)
+	}
+	if cfg.Docker.EnableFUSE {
+		t.Fatal("expected docker FUSE support to be disabled by explicit config")
 	}
 	if cfg.Traffic.AdvertisedHost != "192.0.2.10" {
 		t.Fatalf("expected traffic advertised host, got %q", cfg.Traffic.AdvertisedHost)

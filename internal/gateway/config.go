@@ -20,6 +20,7 @@ const (
 
 	defaultRuntimeType                 = "docker"
 	defaultDockerContainerNamePrefix   = "e2b-envd-"
+	defaultDockerEnableFUSE            = true
 	defaultDockerPublishedHostIP       = "0.0.0.0"
 	defaultDockerHealthTimeoutSeconds  = 30
 	defaultOrbstackMachineNamePrefix   = "e2b-sandbox-"
@@ -74,6 +75,7 @@ type DockerRuntimeConfig struct {
 	Platform             string `yaml:"platform"`
 	ContainerNamePrefix  string `yaml:"container_name_prefix"`
 	EnvdBinary           string `yaml:"envd_binary"`
+	EnableFUSE           bool   `yaml:"enable_fuse"`
 	PublishedPorts       []int  `yaml:"published_ports"`
 	PublishedHostIP      string `yaml:"published_host_ip"`
 	HealthTimeoutSeconds int    `yaml:"health_timeout_seconds"`
@@ -134,6 +136,7 @@ func DefaultConfig() Config {
 		Docker: DockerRuntimeConfig{
 			Host:                 defaultDockerHost(),
 			ContainerNamePrefix:  defaultDockerContainerNamePrefix,
+			EnableFUSE:           defaultDockerEnableFUSE,
 			PublishedHostIP:      defaultDockerPublishedHostIP,
 			HealthTimeoutSeconds: defaultDockerHealthTimeoutSeconds,
 			VolumeHostPath:       defaultVolumeHostPath(),

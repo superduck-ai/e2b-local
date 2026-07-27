@@ -197,6 +197,8 @@ docker:
   published_ports: [5000]
   published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
+  # 默认开启：向 sandbox 暴露 /dev/fuse 并授予 SYS_ADMIN。
+  enable_fuse: true
 ```
 
 重要字段：
@@ -209,6 +211,7 @@ docker:
 - `docker.envd_binary` 是可选 override。留空时 gateway 会按选中镜像架构自动选择 `envd-bin/envd-linux-amd64` 或 `envd-bin/envd-linux-arm64`；显式设置时支持相对配置文件路径。
 - `docker.volume_host_path` 存放 Docker runtime 管理的本地 volume 目录，并支持 `~` 和相对配置文件路径。
 - `docker.published_ports` 会把 `5000` 这类业务端口发布到每个 sandbox 的动态宿主机端口；`docker.published_host_ip` 默认是 `0.0.0.0`，便于内网访问。
+- `docker.enable_fuse` 默认开启，sandbox 会获得 `/dev/fuse` 设备和 `SYS_ADMIN` capability，可在容器内挂载 FUSE 文件系统；设置为 `false` 可关闭该行为。该 capability 权限较高，只应在可信 sandbox 中使用。
 - `orbstack.envd_binary` 可以写相对路径，gateway 会先解析再复制进 VM。
 - `orbstack.volume_host_path` 存放 macOS 本地 volume 目录，并支持 `~` 和相对配置文件路径。
 - `applecontainer.envd_binary` 可以写相对路径。除非选中 template 设置了 `prebaked_envd_path`，gateway 会先解析再复制进 Apple Container sandbox。
@@ -292,6 +295,7 @@ Docker runtime 下：
 - Template 会从本机已有 tag 的 Docker images 解析，也可以在 `templateID` 中直接传完整 image reference；对应镜像必须已经存在本机。
 - gateway 会把非敏感 runtime metadata 写入 `e2b.local.*` container label，进程重启后可恢复 running/paused sandbox。
 - 自动选择或显式配置的 envd binary 会挂载为容器内 `/usr/local/bin/envd`。
+- 配置 `docker.enable_fuse: true` 时，gateway 会向 sandbox 注入 `/dev/fuse` 和 `SYS_ADMIN`；镜像仍需自行安装 `fuse3`、`libfuse2` 或具体 FUSE 程序。
 - 请求里的 E2B volume 是 `docker.volume_host_path` 下的本地目录，并会 bind mount 到 sandbox 容器里。
 - Sandbox response 会返回 Docker runtime 分配的直连 `envdURL`。
 - 通过 `docker.published_ports` 或 Dockerfile `EXPOSE` 声明的业务端口，可以用 `GET /sandboxes/{sandboxID}/ports/{port}` 查询；响应里包含 `url` 和 `wsUrl`，例如 `http://192.168.1.10:38123`。

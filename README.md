@@ -244,6 +244,8 @@ docker:
   published_ports: [5000]
   published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
+  # Enabled by default: expose /dev/fuse and grant SYS_ADMIN to each sandbox.
+  enable_fuse: true
 ```
 
 Important fields:
@@ -256,6 +258,7 @@ Important fields:
 - `docker.envd_binary` is optional. Empty means the gateway picks `envd-bin/envd-linux-amd64` or `envd-bin/envd-linux-arm64` from the selected image architecture. When set, it can be relative to the config file.
 - `docker.volume_host_path` stores managed local volume directories and supports `~` and config-relative paths.
 - `docker.published_ports` publishes business ports such as `5000` from every sandbox on dynamic host ports. `docker.published_host_ip` defaults to `0.0.0.0` for LAN access.
+- `docker.enable_fuse` is enabled by default. Sandboxes receive `/dev/fuse` and the `SYS_ADMIN` capability so they can mount FUSE filesystems; set it to `false` to disable this behavior. This is a powerful capability and should only be used with trusted sandboxes.
 - `orbstack.envd_binary` can be relative to the config file. The gateway copies it into each VM before installing the service.
 - `orbstack.volume_host_path` stores local volume directories on macOS and supports `~` and config-relative paths.
 - `applecontainer.envd_binary` can be relative to the config file. The gateway copies it into Apple Container sandboxes unless the selected template sets `prebaked_envd_path`.
@@ -339,6 +342,7 @@ In Docker runtime:
 - Templates are resolved from local tagged Docker images, or from a full image reference passed as `templateID`. The image must already exist locally.
 - The gateway stores non-sensitive runtime metadata in `e2b.local.*` container labels and restores running/paused sandboxes after process restart.
 - The selected envd binary is mounted at `/usr/local/bin/envd`.
+- With `docker.enable_fuse: true`, the gateway injects `/dev/fuse` and `SYS_ADMIN`; the template image must still install `fuse3`, `libfuse2`, or the specific FUSE program.
 - Requested E2B volumes are local directories under `docker.volume_host_path` and are bind-mounted into sandbox containers.
 - Sandbox responses return the direct runtime `envdURL` assigned by Docker.
 - Business ports declared with `docker.published_ports` or Dockerfile `EXPOSE` can be resolved with `GET /sandboxes/{sandboxID}/ports/{port}`. The response includes `url` and `wsUrl`, for example `http://192.168.1.10:38123`.
