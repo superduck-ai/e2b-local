@@ -264,7 +264,7 @@ func TestPauseAndConnectCallRuntime(t *testing.T) {
 		t.Fatalf("expected runtime pause to receive sandbox container, got %#v", runtime.pauseInfos)
 	}
 
-	connectReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+sandbox.SandboxID+"/connect", bytes.NewBufferString(`{}`))
+	connectReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+sandbox.SandboxID+"/connect", bytes.NewBufferString(`{"timeout":300}`))
 	connectRec := httptest.NewRecorder()
 
 	app.ServeHTTP(connectRec, connectReq)
@@ -430,6 +430,89 @@ func TestReconcileMissingSandboxDeletesRuntimeContainer(t *testing.T) {
 	}
 }
 
+func TestReconcileMissingSandboxRemovesMappingWhenRuntimeDeleteFails(t *testing.T) {
+	runtime := &recordingRuntime{
+		deleteSandboxErr: errors.New("runtime delete failed"),
+	}
+	handler, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app := handler.(*App)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewBufferString(`{"templateID":"base"}`))
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created SandboxResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	runtime.inspectResults = map[string]SandboxRuntimeInspection{
+		"ctr-" + created.SandboxID: {Exists: false},
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v2/sandboxes", nil)
+	listRec := httptest.NewRecorder()
+	app.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+
+	if len(runtime.deleteInfos) != 1 {
+		t.Fatalf("expected one best-effort runtime delete, got %d", len(runtime.deleteInfos))
+	}
+	if _, exists := app.store.Get(created.SandboxID); exists {
+		t.Fatal("expected missing runtime sandbox mapping to be removed despite cleanup failure")
+	}
+}
+
+func TestDeleteSandboxRuntimeFailureReleasesLock(t *testing.T) {
+	runtime := &recordingRuntime{
+		deleteSandboxErr: errors.New("runtime delete failed"),
+	}
+	handler, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app := handler.(*App)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewBufferString(`{"templateID":"base"}`))
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created SandboxResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/sandboxes/"+created.SandboxID, nil)
+	deleteRec := httptest.NewRecorder()
+	app.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected delete status %d, got %d: %s", http.StatusInternalServerError, deleteRec.Code, deleteRec.Body.String())
+	}
+
+	_, exists := app.store.Get(created.SandboxID)
+	if !exists {
+		t.Fatal("expected sandbox mapping to remain after required runtime delete failure")
+	}
+
+	timeoutReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+created.SandboxID+"/timeout", bytes.NewBufferString(`{"timeout":30}`))
+	timeoutRec := httptest.NewRecorder()
+	app.ServeHTTP(timeoutRec, timeoutReq)
+	if timeoutRec.Code != http.StatusNoContent {
+		t.Fatalf("expected sandbox to accept timeout after failed delete, got %d: %s", timeoutRec.Code, timeoutRec.Body.String())
+	}
+}
+
 func TestListSandboxesReconcilesRuntimePausedState(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
@@ -521,6 +604,22 @@ func TestConnectSandbox(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxRejectsNegativeTimeout(t *testing.T) {
+	app := newTestApp(t, DefaultConfig())
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes",
+		bytes.NewBufferString(`{"templateID":"base","timeout":-1}`),
+	)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected negative create timeout status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
 func TestGetSandboxDetail(t *testing.T) {
 	app := newTestApp(t, DefaultConfig())
 
@@ -568,7 +667,6 @@ func TestGetSandboxDetail(t *testing.T) {
 func TestAppRestoresRuntimeSandboxesOnStartup(t *testing.T) {
 	createdAt := time.Now().UTC().Add(-time.Minute)
 	endAt := time.Now().UTC().Add(time.Hour)
-	allowInternet := false
 	cfg := DefaultConfig()
 	runtime := &restoringRuntime{
 		restoreRecords: []SandboxRecord{
@@ -583,10 +681,10 @@ func TestAppRestoresRuntimeSandboxesOnStartup(t *testing.T) {
 					ContainerName: "e2b-envd-sbx_restored",
 					HostPort:      "50000",
 				},
-				CreatedAt:           createdAt,
-				EndAt:               endAt,
-				State:               string(e2bapi.Running),
-				AllowInternetAccess: &allowInternet,
+				CreatedAt:            createdAt,
+				EndAt:                endAt,
+				State:                string(e2bapi.Running),
+				InternetAccessPolicy: InternetAccessDenied,
 			},
 		},
 	}
@@ -702,6 +800,16 @@ func TestExpiredSandboxIsDeletedDuringReconcile(t *testing.T) {
 	}
 	if len(sandboxes) != 0 {
 		t.Fatalf("expected expired sandbox to be removed from list, got %#v", sandboxes)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, exists := app.(*App).store.Get(created.SandboxID); !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for expired sandbox deletion")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if len(runtime.deleteInfos) != 1 || runtime.deleteInfos[0].ContainerID != "ctr-"+created.SandboxID {
 		t.Fatalf("expected expired sandbox to be deleted by runtime, got %#v", runtime.deleteInfos)
@@ -1099,7 +1207,7 @@ func TestPauseSandboxAndConnectResumes(t *testing.T) {
 		t.Fatalf("expected repeated pause status %d, got %d: %s", http.StatusConflict, repeatedPauseRec.Code, repeatedPauseRec.Body.String())
 	}
 
-	connectReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+created.SandboxID+"/connect", bytes.NewBufferString(`{}`))
+	connectReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+created.SandboxID+"/connect", bytes.NewBufferString(`{"timeout":300}`))
 	connectRec := httptest.NewRecorder()
 
 	app.ServeHTTP(connectRec, connectReq)
@@ -1194,6 +1302,18 @@ func TestConnectMissingSandbox(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+}
+
+func TestConnectRequiresTimeout(t *testing.T) {
+	app := newTestApp(t, DefaultConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes/sbx_missing/connect", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing connect timeout status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 }
 
@@ -2692,6 +2812,7 @@ type recordingRuntime struct {
 	volumeDirs          map[string]recordingVolumeContentEntry
 	createRuntimeInfo   SandboxRuntimeInfo
 	deletedVolumeIDs    []string
+	deleteSandboxErr    error
 	deleteVolumeErr     error
 	inspectCalls        []SandboxRuntimeInfo
 	inspectResults      map[string]SandboxRuntimeInspection
@@ -2756,7 +2877,7 @@ func (r *recordingRuntime) CreateSandbox(ctx context.Context, req SandboxRuntime
 
 func (r *recordingRuntime) DeleteSandbox(ctx context.Context, info SandboxRuntimeInfo) error {
 	r.deleteInfos = append(r.deleteInfos, info)
-	return nil
+	return r.deleteSandboxErr
 }
 
 func (r *recordingRuntime) ListTemplates(ctx context.Context) ([]SandboxRuntimeTemplate, error) {

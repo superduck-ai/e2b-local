@@ -48,6 +48,12 @@ unset E2B_SANDBOX_URL
 
 `E2B_API_KEY` 只是为了兼容 SDK。local gateway 不需要真实的托管版 E2B key。
 
+超时默认值与 E2B 的分层保持一致：原始
+[`POST /sandboxes` API](https://e2b.dev/docs/api-reference/sandboxes/create-sandbox)
+在省略 `timeout` 时默认 15 秒，而 E2B SDK 会在客户端应用 5 分钟默认值，并显式发送
+`timeout: 300`。网关对缺少 `EndAt` 的记录统一使用 REST 默认值；正常 SDK 调用仍保持
+SDK 的 5 分钟行为。
+
 Template ID 来自本地 runtime：
 
 - Docker runtime 会把本机已有 tag 的 Docker images 暴露为 template。例如 `e2b-local/code-interpreter:latest` 会暴露为 `code-interpreter`。

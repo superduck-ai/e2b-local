@@ -62,7 +62,6 @@ const dockerEnvdBinaryAMD64 = "envd-bin/envd-linux-amd64"
 const dockerEnvdBinaryARM64 = "envd-bin/envd-linux-arm64"
 const dockerFUSECapability = "SYS_ADMIN"
 const dockerFUSEDevicePath = "/dev/fuse"
-const defaultSandboxTimeoutSeconds = gateway.DefaultSandboxTimeoutSeconds
 const maxSandboxListLimit = gateway.MaxSandboxListLimit
 
 const (
@@ -512,22 +511,22 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 	}
 
 	createdAt := dockerTimeLabel(labels[dockerLocalSandboxCreatedAtLabel], dockerImageCreatedAt(inspect.Created, now))
-	endAt := dockerTimeLabel(labels[dockerLocalSandboxEndAtLabel], now.Add(time.Duration(defaultSandboxTimeoutSeconds)*time.Second))
+	endAt := dockerTimeLabel(labels[dockerLocalSandboxEndAtLabel], createdAt.Add(time.Duration(gateway.DefaultSandboxTimeoutSeconds)*time.Second))
 	templateID := strings.TrimSpace(labels[dockerLocalSandboxTemplateIDLabel])
 	if templateID == "" {
 		templateID = dockerTemplateName(summary.Image)
 	}
 
 	return SandboxRecord{
-		ID:                  sandboxID,
-		TemplateID:          templateID,
-		Metadata:            dockerStringMapLabel(labels[dockerLocalSandboxMetadataLabel]),
-		EnvdURL:             info.EnvdURL,
-		RuntimeInfo:         info,
-		CreatedAt:           createdAt,
-		EndAt:               endAt,
-		State:               state,
-		AllowInternetAccess: dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel]),
+		ID:                   sandboxID,
+		TemplateID:           templateID,
+		Metadata:             dockerStringMapLabel(labels[dockerLocalSandboxMetadataLabel]),
+		EnvdURL:              info.EnvdURL,
+		RuntimeInfo:          info,
+		CreatedAt:            createdAt,
+		EndAt:                endAt,
+		State:                state,
+		InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel])),
 	}, true, nil
 }
 

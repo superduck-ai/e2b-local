@@ -322,15 +322,15 @@ func (r *OrbstackRuntime) RestoreSandboxes(ctx context.Context) ([]SandboxRecord
 		runtimeInfo := r.runtimeInfo(sandboxID, vmInfo, volumeMounts)
 
 		records = append(records, SandboxRecord{
-			ID:                  sandboxID,
-			TemplateID:          templateID,
-			Metadata:            gateway.CopyStringMap(metadata.Metadata),
-			EnvdURL:             runtimeInfo.EnvdURL,
-			RuntimeInfo:         runtimeInfo,
-			CreatedAt:           createdAt,
-			EndAt:               endAt,
-			State:               sandboxStateFromVMState(vmInfo.State),
-			AllowInternetAccess: metadata.AllowInternetAccess,
+			ID:                   sandboxID,
+			TemplateID:           templateID,
+			Metadata:             gateway.CopyStringMap(metadata.Metadata),
+			EnvdURL:              runtimeInfo.EnvdURL,
+			RuntimeInfo:          runtimeInfo,
+			CreatedAt:            createdAt,
+			EndAt:                endAt,
+			State:                sandboxStateFromVMState(vmInfo.State),
+			InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(metadata.AllowInternetAccess),
 		})
 	}
 

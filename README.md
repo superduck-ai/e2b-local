@@ -94,6 +94,13 @@ unset E2B_SANDBOX_URL
 
 `E2B_API_KEY` is kept for SDK compatibility. The local gateway does not require a real hosted E2B key.
 
+Timeout defaults follow the same layering as E2B: the raw
+[`POST /sandboxes` API](https://e2b.dev/docs/api-reference/sandboxes/create-sandbox)
+defaults an omitted `timeout` to 15 seconds, while E2B SDKs apply their
+5-minute default client-side and send `timeout: 300` explicitly. The gateway
+uses the REST default as its single fallback for records that do not carry an
+`EndAt`; normal SDK calls retain the SDK's 5-minute behavior.
+
 Template IDs are local runtime IDs:
 
 - Docker runtime exposes tagged local Docker images as templates. For example, `e2b-local/code-interpreter:latest` is available as `code-interpreter`.

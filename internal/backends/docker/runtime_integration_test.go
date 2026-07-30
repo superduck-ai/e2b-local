@@ -285,7 +285,7 @@ func TestDockerRuntimeGatewayCreatePauseConnectDelete(t *testing.T) {
 		t.Fatalf("expected container to be paused, got %#v", inspect.State)
 	}
 
-	connectReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+sandbox.SandboxID+"/connect", bytes.NewBufferString(`{}`))
+	connectReq := httptest.NewRequest(http.MethodPost, "/sandboxes/"+sandbox.SandboxID+"/connect", bytes.NewBufferString(`{"timeout":300}`))
 	connectReq = connectReq.WithContext(ctx)
 	connectRec := httptest.NewRecorder()
 

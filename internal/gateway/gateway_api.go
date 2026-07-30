@@ -218,11 +218,18 @@ func (a *App) PostSandboxesSandboxIDResume(c *gin.Context, sandboxID e2bapi.Sand
 }
 
 func (a *App) PostSandboxesSandboxIDConnect(c *gin.Context, sandboxID e2bapi.SandboxID) {
-	var req e2bapi.ConnectSandbox
-	if err := bindOptionalJSON(c, &req); err != nil {
+	var body struct {
+		Timeout *int32 `json:"timeout"`
+	}
+	if err := bindJSON(c, &body); err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if body.Timeout == nil {
+		writeError(c, http.StatusBadRequest, "timeout is required")
+		return
+	}
+	req := e2bapi.ConnectSandbox{Timeout: *body.Timeout}
 
 	record, resumed, err := a.callbacks.ConnectSandbox(a.callbackContext(c), sandboxID, req)
 	if err != nil {
@@ -699,7 +706,7 @@ func (a *App) sandboxDomainForResponse(record SandboxRecord) *string {
 func (a *App) apiSandboxResponse(record SandboxRecord) sandboxAPIResponse {
 	return sandboxAPIResponse{
 		Sandbox: e2bapi.Sandbox{
-			Alias:       record.Alias,
+			Alias:       optionalString(record.Alias),
 			ClientID:    sandboxClientID(record),
 			Domain:      a.sandboxDomainForResponse(record),
 			EnvdVersion: sandboxEnvdVersion(record),
@@ -716,12 +723,12 @@ func (a *App) apiSandboxDetailResponse(record SandboxRecord) e2bapi.SandboxDetai
 	volumeMounts := apiSandboxVolumeMounts(record.RuntimeInfo.VolumeMounts)
 	endAt := record.EndAt
 	if endAt.IsZero() {
-		endAt = record.CreatedAt.Add(time.Duration(defaultSandboxTimeoutSeconds) * time.Second)
+		endAt = defaultSandboxEndAt(record.CreatedAt)
 	}
 
 	return e2bapi.SandboxDetail{
-		Alias:               record.Alias,
-		AllowInternetAccess: record.AllowInternetAccess,
+		Alias:               optionalString(record.Alias),
+		AllowInternetAccess: record.InternetAccessPolicy.BoolPtr(),
 		ClientID:            sandboxClientID(record),
 		CpuCount:            sandboxCPUCount(record),
 		DiskSizeMB:          sandboxDiskSizeMB(record),
@@ -747,7 +754,7 @@ func (a *App) apiListedSandboxes(records []SandboxRecord) []listedSandboxAPIResp
 	for _, record := range records {
 		items = append(items, listedSandboxAPIResponse{
 			ListedSandbox: e2bapi.ListedSandbox{
-				Alias:        record.Alias,
+				Alias:        optionalString(record.Alias),
 				ClientID:     sandboxClientID(record),
 				CpuCount:     sandboxCPUCount(record),
 				DiskSizeMB:   sandboxDiskSizeMB(record),
@@ -765,6 +772,13 @@ func (a *App) apiListedSandboxes(records []SandboxRecord) []listedSandboxAPIResp
 		})
 	}
 	return items
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (a *App) gatewayTemplate(template SandboxRuntimeTemplate) GatewayTemplate {
@@ -868,7 +882,7 @@ func recordEndAt(record SandboxRecord) time.Time {
 	if !record.EndAt.IsZero() {
 		return record.EndAt
 	}
-	return record.CreatedAt.Add(time.Duration(defaultSandboxTimeoutSeconds) * time.Second)
+	return defaultSandboxEndAt(record.CreatedAt)
 }
 
 func sandboxClientID(record SandboxRecord) string {
