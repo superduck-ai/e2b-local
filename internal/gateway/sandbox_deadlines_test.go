@@ -16,7 +16,8 @@ import (
 
 type deadlineRuntime struct {
 	recordingRuntime
-	deleted chan SandboxRuntimeInfo
+	deleted   chan SandboxRuntimeInfo
+	deleteErr error
 }
 
 type blockingDeleteRuntime struct {
@@ -24,6 +25,12 @@ type blockingDeleteRuntime struct {
 	blockContainerID string
 	deleteStarted    chan struct{}
 	releaseDelete    chan struct{}
+}
+
+type blockingInspectRuntime struct {
+	recordingRuntime
+	inspectStarted chan struct{}
+	releaseInspect chan struct{}
 }
 
 func (r *blockingDeleteRuntime) DeleteSandbox(ctx context.Context, info SandboxRuntimeInfo) error {
@@ -43,6 +50,20 @@ func (r *blockingDeleteRuntime) DeleteSandbox(ctx context.Context, info SandboxR
 	}
 }
 
+func (r *blockingInspectRuntime) InspectSandbox(ctx context.Context, info SandboxRuntimeInfo) (SandboxRuntimeInspection, error) {
+	select {
+	case <-r.inspectStarted:
+	default:
+		close(r.inspectStarted)
+	}
+	select {
+	case <-r.releaseInspect:
+		return r.recordingRuntime.InspectSandbox(ctx, info)
+	case <-ctx.Done():
+		return SandboxRuntimeInspection{}, ctx.Err()
+	}
+}
+
 func newDeadlineRuntime() *deadlineRuntime {
 	return &deadlineRuntime{
 		deleted: make(chan SandboxRuntimeInfo, 8),
@@ -54,7 +75,7 @@ func (r *deadlineRuntime) DeleteSandbox(ctx context.Context, info SandboxRuntime
 	case r.deleted <- info:
 	default:
 	}
-	return nil
+	return r.deleteErr
 }
 
 func newDeadlineTestApp(t *testing.T) (*App, *deadlineRuntime) {
@@ -113,6 +134,21 @@ func setSandboxEndAtWithoutReschedulingForTest(t *testing.T, app *App, sandboxID
 
 	if _, ok, err := app.store.SetEndAt(sandboxID, endAt); err != nil || !ok {
 		t.Fatalf("set deadline without rescheduling: ok=%t err=%v", ok, err)
+	}
+}
+
+func waitForSandboxRemovalForTest(t *testing.T, app *App, sandboxID string) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, exists := app.store.Get(sandboxID); !exists {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for sandbox %q to be removed", sandboxID)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -236,6 +272,84 @@ func TestConnectExtendsRunningSandboxDeadline(t *testing.T) {
 	}
 }
 
+func TestLifecycleExtensionStartsAfterReconciliation(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{name: "connect", path: "/connect", body: `{"timeout":3}`, wantStatus: http.StatusOK},
+		{name: "timeout", path: "/timeout", body: `{"timeout":3}`, wantStatus: http.StatusNoContent},
+		{name: "refresh", path: "/refreshes", body: `{"duration":3}`, wantStatus: http.StatusNoContent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := &blockingInspectRuntime{
+				inspectStarted: make(chan struct{}),
+				releaseInspect: make(chan struct{}),
+			}
+			handler, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+			if err != nil {
+				t.Fatalf("create app: %v", err)
+			}
+			app := handler.(*App)
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := app.Shutdown(ctx); err != nil {
+					t.Errorf("shutdown app: %v", err)
+				}
+			})
+
+			created := createSandboxForTest(t, app, "base", http.StatusCreated)
+			setSandboxEndAtForTest(t, app, created.SandboxID, time.Now().UTC().Add(2*time.Second))
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/sandboxes/"+created.SandboxID+tt.path,
+				bytes.NewBufferString(tt.body),
+			)
+			rec := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				app.ServeHTTP(rec, req)
+				close(done)
+			}()
+
+			select {
+			case <-runtime.inspectStarted:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for runtime inspection")
+			}
+
+			// 模拟慢速 runtime 对账。新的三秒期限应从对账结束后开始，
+			// 而不是从请求进入 handler 时开始。
+			time.Sleep(250 * time.Millisecond)
+			reconciledAt := time.Now().UTC()
+			close(runtime.releaseInspect)
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("lifecycle request did not finish after inspection")
+			}
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+
+			record, exists := app.store.Get(created.SandboxID)
+			if !exists {
+				t.Fatal("expected extended sandbox in store")
+			}
+			if record.EndAt.Before(reconciledAt.Add(2900 * time.Millisecond)) {
+				t.Fatalf("expected deadline to start after reconciliation at %s, got %s", reconciledAt, record.EndAt)
+			}
+		})
+	}
+}
+
 func TestLifecycleExtensionsCannotReviveExpiredSandbox(t *testing.T) {
 	tests := []struct {
 		name string
@@ -268,23 +382,22 @@ func TestLifecycleExtensionsCannotReviveExpiredSandbox(t *testing.T) {
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("expected expired sandbox status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
 			}
-			if _, exists := app.store.Get(created.SandboxID); exists {
-				t.Fatal("expected expired sandbox to be removed instead of extended")
-			}
 			select {
 			case deleted := <-runtime.deleted:
 				if deleted.ContainerID != "ctr-"+created.SandboxID {
 					t.Fatalf("expected runtime deletion for %q, got %#v", created.SandboxID, deleted)
 				}
-			default:
-				t.Fatal("expected expired sandbox runtime to be deleted")
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for expired sandbox runtime deletion")
 			}
+			waitForSandboxRemovalForTest(t, app, created.SandboxID)
 		})
 	}
 }
 
 func TestExpiredSandboxCannotBeRevivedWhenCleanupFails(t *testing.T) {
-	runtime := &recordingRuntime{deleteSandboxErr: context.DeadlineExceeded}
+	runtime := newDeadlineRuntime()
+	runtime.deleteErr = context.DeadlineExceeded
 	handler, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
 	if err != nil {
 		t.Fatalf("create app: %v", err)
@@ -313,6 +426,11 @@ func TestExpiredSandboxCannotBeRevivedWhenCleanupFails(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected expired sandbox status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
 	}
+	select {
+	case <-runtime.deleted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed background cleanup attempt")
+	}
 	record, exists := app.store.Get(created.SandboxID)
 	if !exists {
 		t.Fatal("expected record to remain while runtime cleanup is retried")
@@ -320,6 +438,63 @@ func TestExpiredSandboxCannotBeRevivedWhenCleanupFails(t *testing.T) {
 	if !record.EndAt.Equal(expiredEndAt) {
 		t.Fatalf("expected failed cleanup to preserve expired EndAt %s, got %s", expiredEndAt, record.EndAt)
 	}
+}
+
+func TestExpiredSandboxRequestDoesNotWaitForRuntimeCleanup(t *testing.T) {
+	runtime := &blockingDeleteRuntime{
+		deleteStarted: make(chan struct{}),
+		releaseDelete: make(chan struct{}),
+	}
+	handler, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app := handler.(*App)
+	t.Cleanup(func() {
+		select {
+		case <-runtime.releaseDelete:
+		default:
+			close(runtime.releaseDelete)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := app.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown app: %v", err)
+		}
+	})
+
+	created := createSandboxForTest(t, app, "base", http.StatusCreated)
+	runtime.blockContainerID = "ctr-" + created.SandboxID
+	setSandboxEndAtWithoutReschedulingForTest(t, app, created.SandboxID, time.Now().UTC().Add(-time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "/sandboxes/"+created.SandboxID, nil)
+	rec := httptest.NewRecorder()
+	requestDone := make(chan struct{})
+	go func() {
+		app.ServeHTTP(rec, req)
+		close(requestDone)
+	}()
+
+	select {
+	case <-requestDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expired sandbox request waited for runtime cleanup")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected expired sandbox status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case <-runtime.deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background runtime cleanup")
+	}
+	if _, exists := app.store.Get(created.SandboxID); !exists {
+		t.Fatal("expected store record to remain until runtime cleanup succeeds")
+	}
+
+	close(runtime.releaseDelete)
+	waitForSandboxRemovalForTest(t, app, created.SandboxID)
 }
 
 func TestLifecycleExtensionsRejectMissingRuntimeSandbox(t *testing.T) {
