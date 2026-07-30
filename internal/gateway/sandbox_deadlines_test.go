@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"e2b-local/internal/e2bapi"
 )
 
 type deadlineRuntime struct {
@@ -98,6 +100,20 @@ func setSandboxEndAtForTest(t *testing.T, app *App, sandboxID string, endAt time
 		t.Fatalf("set deadline: ok=%t err=%v", ok, err)
 	}
 	app.syncSandboxDeadline(record)
+}
+
+func setSandboxEndAtWithoutReschedulingForTest(t *testing.T, app *App, sandboxID string, endAt time.Time) {
+	t.Helper()
+
+	entry, exists := app.store.lockSandbox(sandboxID)
+	if !exists {
+		t.Fatalf("sandbox %q not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	if _, ok, err := app.store.SetEndAt(sandboxID, endAt); err != nil || !ok {
+		t.Fatalf("set deadline without rescheduling: ok=%t err=%v", ok, err)
+	}
 }
 
 func TestUnchangedInspectionDoesNotReplaceDeadline(t *testing.T) {
@@ -217,6 +233,162 @@ func TestConnectExtendsRunningSandboxDeadline(t *testing.T) {
 	}
 	if record.EndAt.Before(before.Add(900*time.Millisecond)) || record.EndAt.After(after.Add(1100*time.Millisecond)) {
 		t.Fatalf("expected connect to extend deadline near now+1s, got %s", record.EndAt)
+	}
+}
+
+func TestLifecycleExtensionsCannotReviveExpiredSandbox(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "connect", path: "/connect", body: `{"timeout":30}`},
+		{name: "timeout", path: "/timeout", body: `{"timeout":30}`},
+		{name: "refresh", path: "/refreshes", body: `{"duration":30}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app, runtime := newDeadlineTestApp(t)
+			created := createSandboxForTest(t, app, "base", http.StatusCreated)
+			expiredEndAt := time.Now().UTC().Add(-time.Second)
+
+			// 故意不重排 timer，模拟 EndAt 已到但旧 timer callback 尚未取得
+			// lifecycleMu 的窗口。请求路径必须自行识别过期状态。
+			setSandboxEndAtWithoutReschedulingForTest(t, app, created.SandboxID, expiredEndAt)
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/sandboxes/"+created.SandboxID+tt.path,
+				bytes.NewBufferString(tt.body),
+			)
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected expired sandbox status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
+			}
+			if _, exists := app.store.Get(created.SandboxID); exists {
+				t.Fatal("expected expired sandbox to be removed instead of extended")
+			}
+			select {
+			case deleted := <-runtime.deleted:
+				if deleted.ContainerID != "ctr-"+created.SandboxID {
+					t.Fatalf("expected runtime deletion for %q, got %#v", created.SandboxID, deleted)
+				}
+			default:
+				t.Fatal("expected expired sandbox runtime to be deleted")
+			}
+		})
+	}
+}
+
+func TestExpiredSandboxCannotBeRevivedWhenCleanupFails(t *testing.T) {
+	runtime := &recordingRuntime{deleteSandboxErr: context.DeadlineExceeded}
+	handler, err := NewAppWithRuntime(DefaultConfig(), log.New(io.Discard, "", 0), runtime)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app := handler.(*App)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := app.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown app: %v", err)
+		}
+	})
+
+	created := createSandboxForTest(t, app, "base", http.StatusCreated)
+	expiredEndAt := time.Now().UTC().Add(-time.Second)
+	setSandboxEndAtWithoutReschedulingForTest(t, app, created.SandboxID, expiredEndAt)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes/"+created.SandboxID+"/timeout",
+		bytes.NewBufferString(`{"timeout":30}`),
+	)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected expired sandbox status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+	record, exists := app.store.Get(created.SandboxID)
+	if !exists {
+		t.Fatal("expected record to remain while runtime cleanup is retried")
+	}
+	if !record.EndAt.Equal(expiredEndAt) {
+		t.Fatalf("expected failed cleanup to preserve expired EndAt %s, got %s", expiredEndAt, record.EndAt)
+	}
+}
+
+func TestLifecycleExtensionsRejectMissingRuntimeSandbox(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "connect", path: "/connect", body: `{"timeout":30}`},
+		{name: "timeout", path: "/timeout", body: `{"timeout":30}`},
+		{name: "refresh", path: "/refreshes", body: `{"duration":30}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app, runtime := newDeadlineTestApp(t)
+			created := createSandboxForTest(t, app, "base", http.StatusCreated)
+			runtime.inspectResults = map[string]SandboxRuntimeInspection{
+				"ctr-" + created.SandboxID: {Exists: false},
+			}
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/sandboxes/"+created.SandboxID+tt.path,
+				bytes.NewBufferString(tt.body),
+			)
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected missing runtime sandbox status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
+			}
+			if len(runtime.inspectCalls) != 1 {
+				t.Fatalf("expected one runtime inspection, got %d", len(runtime.inspectCalls))
+			}
+			if _, exists := app.store.Get(created.SandboxID); exists {
+				t.Fatal("expected missing runtime sandbox mapping to be removed")
+			}
+		})
+	}
+}
+
+func TestConnectReconcilesRuntimePausedStateBeforeExtending(t *testing.T) {
+	app, runtime := newDeadlineTestApp(t)
+	created := createSandboxForTest(t, app, "base", http.StatusCreated)
+	runtime.inspectResults = map[string]SandboxRuntimeInspection{
+		"ctr-" + created.SandboxID: {
+			Exists: true,
+			State:  string(e2bapi.Paused),
+		},
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes/"+created.SandboxID+"/connect",
+		bytes.NewBufferString(`{"timeout":30}`),
+	)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected reconciled paused sandbox status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	if len(runtime.resumeInfos) != 1 {
+		t.Fatalf("expected connect to resume runtime-paused sandbox, got %d resume calls", len(runtime.resumeInfos))
+	}
+	record, exists := app.store.Get(created.SandboxID)
+	if !exists || record.State != string(e2bapi.Running) {
+		t.Fatalf("expected resumed running record, exists=%t record=%#v", exists, record)
 	}
 }
 
