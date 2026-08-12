@@ -13,6 +13,7 @@ runtime:
   # docker: create one OrbStack/Docker container per sandbox.
   # orbstack: create one OrbStack VM per sandbox and run envd inside the machine.
   # applecontainer: create one Apple Container VM-backed container per sandbox on macOS.
+  # sbx: create one Docker Sandboxes microVM per sandbox through local sandboxd.
   type: "docker"
 
 docker:
@@ -32,6 +33,20 @@ docker:
   # published_ports: [5000]
   published_host_ip: "0.0.0.0"
   health_timeout_seconds: 30
+
+# Docker Sandboxes use an authenticated local sandboxd. Build/import the reusable
+# base once with scripts/build-sbx-image.sh, then start from config.sbx.yaml.
+sbx:
+  default_image: "e2b-local/sbx-envd:dev"
+  health_timeout_seconds: 60
+  volume_host_path: "~/.e2b-local/volumes/sbx"
+  # Optional guest business ports exposed through the SBX reverse tunnel.
+  published_ports: []
+  templates:
+    sbx:
+      image: "e2b-local/sbx-envd:dev"
+      memory: "2GB"
+      cpus: 2
 
 orbstack:
   machine_name_prefix: "e2b-sandbox-"

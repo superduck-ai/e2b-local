@@ -7,8 +7,9 @@
 - Docker containers through the Docker Engine API
 - OrbStack Linux VMs through the OrbStack CLI
 - Apple Container through its native XPC services on macOS
+- Docker Sandboxes (SBX) microVMs through local `sbx` and `sandboxd` services
 
-The HTTP layer follows the E2B OpenAPI schema where practical, while runtime-specific work lives behind Docker, OrbStack, and Apple Container backend packages.
+The HTTP layer follows the E2B OpenAPI schema where practical, while runtime-specific work lives behind Docker, OrbStack, Apple Container, and SBX backend packages.
 
 ## Quick Start
 
@@ -54,6 +55,7 @@ flowchart LR
     Registry --> Docker["Docker runtime<br/>internal/backends/docker"]
     Registry --> OrbStack["OrbStack runtime<br/>internal/backends/orbstack"]
     Registry --> AppleContainer["Apple Container runtime<br/>internal/backends/applecontainer"]
+    Registry --> SBX["SBX runtime<br/>internal/backends/sbx"]
   end
 
   subgraph DockerRuntime["Docker"]
@@ -71,6 +73,12 @@ flowchart LR
     AppleContainer --> AppleVolumes["Apple Container named volumes"]
   end
 
+  subgraph SBXRuntime["Docker Sandboxes"]
+    SBX --> Sandboxd["local sandboxd UDS"]
+    Sandboxd --> MicroVMs["Sandbox microVMs"]
+    SBX --> SBXVolumes["Host volume directories<br/>sbx.volume_host_path"]
+  end
+
   EnvdBin["envd-bin<br/>linux amd64 / arm64"] --> Docker
   EnvdBin --> OrbStack
   EnvdBin --> AppleContainer
@@ -78,6 +86,7 @@ flowchart LR
   VMs --> VMEnvd["envd systemd service"]
   ContainerEnvd -. "direct envdURL" .-> SDK
   VMEnvd -. "direct envdURL" .-> SDK
+  MicroVMs -. "reverse-tunnel envdURL" .-> SDK
 ```
 
 The gateway handles E2B-compatible control-plane APIs such as sandbox lifecycle, templates, volumes, snapshots, metrics, and logs. After a sandbox is created, SDK calls for commands, filesystem, PTY, and streaming use the sandbox-specific `envdURL` returned by the runtime.
@@ -220,7 +229,7 @@ Docker inspects the selected image architecture and bind-mounts the matching `en
 
 ## Configuration
 
-See `config.example.yaml` for the full local config shape. Use `config.docker.yaml` for a Docker-focused example, `config.orb.yaml` for an OrbStack-focused example, and `config.applecontainer.yaml` for an Apple Container example.
+See `config.example.yaml` for the full local config shape. Use `config.docker.yaml` for a Docker-focused example, `config.orb.yaml` for an OrbStack-focused example, `config.applecontainer.yaml` for an Apple Container example, and `config.sbx.yaml` for Docker Sandboxes.
 
 A compact Docker config:
 
@@ -250,7 +259,7 @@ docker:
 
 Important fields:
 
-- `runtime.type` supports `docker`, `orbstack`, and `applecontainer`.
+- `runtime.type` supports `docker`, `orbstack`, `applecontainer`, and `sbx`.
 - `docker.host` can be omitted. The gateway uses `DOCKER_HOST`, then the current user's OrbStack socket when present, then `unix:///var/run/docker.sock`.
 - Docker templates are discovered from tagged local Docker images. The gateway never pulls images; pull, build, and tag them locally before creating sandboxes.
 - `traffic.advertised_host` is the IP or host returned by sandbox port lookups. Empty means the gateway detects it on startup. `traffic.interface` can force a host interface such as `en0`; otherwise macOS falls back to UDP probing, while Linux tries netlink route detection before UDP probing.
@@ -361,6 +370,47 @@ Example sandbox request:
 }
 ```
 
+## Docker Sandboxes (SBX) Runtime
+
+SBX uses the locally installed Docker Sandboxes control plane. Build and import
+the reusable SBX base image:
+
+```bash
+scripts/build-sbx-image.sh
+go run ./cmd/e2b-local --config config.sbx.yaml
+```
+
+The build compiles `sbx-init` and `sbx-tunnel` from the current `e2b-local`
+source and copies the versioned, target-architecture `envd` binary already in
+this repository. The final image contains only `envd`, `sbx-init`, and
+`sbx-tunnel`; it has no source tree or build-time dependency.
+
+This build is not performed for each sandbox. The base image is reused, and a
+regular OCI workload image can derive from it:
+
+```dockerfile
+FROM e2b-local/sbx-envd:dev
+RUN apk add --no-cache python3
+```
+
+An arbitrary OCI image without those bootstrap binaries is not a direct SBX
+template because `sandboxd` owns its entrypoint. That does not require a
+per-sandbox custom-image build.
+
+The backend requires `sbx login` and uses authenticated `sandboxd` exclusively
+for lifecycle operations; there is no logged-out Docker fallback.
+
+SBX supports create/pause/resume/delete, restart recovery, volumes, logs,
+metrics, Docker-hijacked PTY, and a reverse tunnel for the guest `envd` URL.
+Snapshots are deliberately unsupported for SBX. Although Docker Sandboxes can
+save a simple CLI sandbox, its native save fails for a fully bootstrapped
+e2b-local sandbox with an overlay commit error. The gateway returns `501`
+rather than presenting an unreliable partial implementation as a snapshot.
+
+The local SBX state file stores only the private bootstrap metadata needed to
+recover a gateway process and relaunch envd/reverse tunnels after native
+stop/start. It is not a VM snapshot and does not provide a fast-wake feature.
+
 ## OrbStack Runtime
 
 Use OrbStack runtime when each sandbox should run inside a full Linux VM:
@@ -424,8 +474,8 @@ Notes:
 - A default kernel is required. If `container run` reports `default kernel not configured`, run `container system kernel set --recommended`.
 - Template images must already be pulled with Apple Container. Lifecycle-only smoke tests can use small images such as Alpine, but E2B SDK command execution needs an image with `/bin/bash`; `debian:bookworm-slim` works.
 - envd is copied from `applecontainer.envd_binary` unless the selected template sets `prebaked_envd_path`.
-- envd is exposed with an explicit published localhost port because Apple Container does not allocate `hostPort: 0`; the runtime retries with a fresh port when Apple Container reports a port conflict.
-- `pause` maps to Apple Container stop, and `resume` bootstraps the existing container and reuses the persisted published port.
+- envd receives an explicit published localhost port because Apple Container does not allocate `hostPort: 0`; the runtime retries with a fresh port when Apple Container reports a port conflict. If that local port proxy is unavailable, the runtime returns the reachable guest IPv4 URL instead.
+- `pause` maps to Apple Container stop, and `resume` bootstraps the existing container and reuses the persisted published port. A guest-IP `envdURL` can change across stop/start and the resume response carries the updated URL.
 - Volumes use Apple Container named volumes and are mounted with the requested `VolumeMounts` during sandbox creation.
 
 Capability matrix:

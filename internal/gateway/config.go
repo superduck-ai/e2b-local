@@ -36,6 +36,8 @@ const (
 	defaultAppleContainerHealthTimeout = 60
 	defaultAppleContainerCPUs          = 4
 	defaultAppleContainerMemoryMB      = 1024
+	defaultSbxImage                    = "e2b-local/sbx-envd:dev"
+	defaultSbxHealthTimeout            = 60
 	defaultTemplateBuildMaxConcurrent  = 2
 	defaultTrafficProbeAddr            = "8.8.8.8:80"
 )
@@ -49,6 +51,7 @@ type Config struct {
 	Docker         DockerRuntimeConfig         `yaml:"docker"`
 	Orbstack       OrbstackRuntimeConfig       `yaml:"orbstack"`
 	AppleContainer AppleContainerRuntimeConfig `yaml:"applecontainer"`
+	Sbx            SbxRuntimeConfig            `yaml:"sbx"`
 	TemplateBuilds TemplateBuildConfig         `yaml:"template_builds"`
 }
 
@@ -122,6 +125,41 @@ type AppleContainerTemplateConfig struct {
 	PrebakedEnvdPath string `yaml:"prebaked_envd_path"`
 }
 
+// SbxRuntimeConfig configures Docker Sandboxes' authenticated microVM runtime.
+// Its embedded overrides are runtime-only and never part of the user YAML.
+type SbxRuntimeConfig struct {
+	DefaultImage         string                       `yaml:"default_image"`
+	HealthTimeoutSeconds int                          `yaml:"health_timeout_seconds"`
+	PublishedPorts       []int                        `yaml:"published_ports"`
+	VolumeHostPath       string                       `yaml:"volume_host_path"`
+	Templates            map[string]SbxTemplateConfig `yaml:"templates"`
+
+	SbxRuntimeOverrides `yaml:"-"`
+}
+
+// SbxRuntimeOverrides contains host-specific paths and transport settings used
+// by programmatic embedding and integration tests.
+type SbxRuntimeOverrides struct {
+	SandboxdSocket    string
+	DockerSocket      string
+	MetricsRoot       string
+	Agent             string
+	Workspace         string
+	EnvdPort          int
+	TunnelBindHost    string
+	TunnelHost        string
+	TunnelPublicHost  string
+	TunnelPortRange   []int
+	TunnelConnections int
+}
+
+type SbxTemplateConfig struct {
+	Image    string `yaml:"image"`
+	Memory   string `yaml:"memory"`
+	CPUs     int    `yaml:"cpus"`
+	StartCmd string `yaml:"start_cmd"`
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Server: ServerConfig{
@@ -158,6 +196,14 @@ func DefaultConfig() Config {
 			HealthTimeoutSeconds: defaultAppleContainerHealthTimeout,
 			DefaultCPUs:          defaultAppleContainerCPUs,
 			DefaultMemoryMB:      defaultAppleContainerMemoryMB,
+		},
+		Sbx: SbxRuntimeConfig{
+			DefaultImage:         defaultSbxImage,
+			HealthTimeoutSeconds: defaultSbxHealthTimeout,
+			VolumeHostPath:       filepath.Join(defaultVolumeHostPath(), "sbx"),
+			Templates: map[string]SbxTemplateConfig{
+				"sbx": {Image: defaultSbxImage},
+			},
 		},
 		TemplateBuilds: TemplateBuildConfig{
 			MaxConcurrent: defaultTemplateBuildMaxConcurrent,
@@ -260,6 +306,7 @@ func (c *Config) ResolveLocalPaths(baseDir string) {
 	c.Orbstack.EnvdBinary = resolveLocalPath(baseDir, c.Orbstack.EnvdBinary)
 	c.Orbstack.VolumeHostPath = resolveLocalPath(baseDir, c.Orbstack.VolumeHostPath)
 	c.AppleContainer.EnvdBinary = resolveLocalPath(baseDir, c.AppleContainer.EnvdBinary)
+	c.Sbx.VolumeHostPath = resolveLocalPath(baseDir, c.Sbx.VolumeHostPath)
 }
 
 func resolveLocalPath(baseDir string, value string) string {
@@ -318,8 +365,9 @@ func (c Config) Validate() error {
 	case "docker":
 	case "orbstack":
 	case "applecontainer":
+	case "sbx":
 	default:
-		return fmt.Errorf("runtime.type must be docker, orbstack, or applecontainer")
+		return fmt.Errorf("runtime.type must be docker, orbstack, applecontainer, or sbx")
 	}
 
 	if c.Runtime.Type == "docker" {
@@ -338,7 +386,41 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	if c.Runtime.Type == "sbx" {
+		if err := c.Sbx.Validate(); err != nil {
+			return err
+		}
+	}
 
+	return nil
+}
+
+func (c SbxRuntimeConfig) Validate() error {
+	if strings.TrimSpace(c.DefaultImage) == "" {
+		return fmt.Errorf("sbx.default_image is required")
+	}
+	if c.HealthTimeoutSeconds <= 0 {
+		return fmt.Errorf("sbx.health_timeout_seconds must be positive")
+	}
+	for _, port := range c.PublishedPorts {
+		if port <= 0 || port > 65535 || port == 49983 {
+			return fmt.Errorf("sbx.published_ports values must be between 1 and 65535 and must not include envd port 49983")
+		}
+	}
+	if strings.TrimSpace(c.VolumeHostPath) == "" || !filepath.IsAbs(c.VolumeHostPath) {
+		return fmt.Errorf("sbx.volume_host_path must be an absolute path")
+	}
+	for templateID, template := range c.Templates {
+		if strings.TrimSpace(templateID) == "" {
+			return fmt.Errorf("sbx.templates keys must not be empty")
+		}
+		if strings.TrimSpace(template.Image) == "" {
+			return fmt.Errorf("sbx.templates.%s.image is required", templateID)
+		}
+		if template.CPUs < 0 {
+			return fmt.Errorf("sbx.templates.%s.cpus must not be negative", templateID)
+		}
+	}
 	return nil
 }
 

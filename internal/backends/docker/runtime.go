@@ -1776,7 +1776,7 @@ func normalizeDockerPublishedPorts(ports []int) []int {
 	return result
 }
 
-func dockerTCPPortsFromSet(portSet nat.PortSet) []int {
+func dockerTCPPortsFromSet(portSet map[string]struct{}) []int {
 	ports := make([]int, 0, len(portSet))
 	for port := range portSet {
 		containerPort, protocol, ok := parseDockerNatPort(port)
@@ -1788,8 +1788,8 @@ func dockerTCPPortsFromSet(portSet nat.PortSet) []int {
 	return ports
 }
 
-func parseDockerNatPort(port nat.Port) (int, string, bool) {
-	parts := strings.SplitN(string(port), "/", 2)
+func parseDockerNatPort(port string) (int, string, bool) {
+	parts := strings.SplitN(port, "/", 2)
 	if len(parts) != 2 {
 		return 0, "", false
 	}
@@ -1949,7 +1949,7 @@ func dockerPublishedPortsFromBindings(ports nat.PortMap) []SandboxPortMapping {
 	}
 	result := []SandboxPortMapping{}
 	for port, bindings := range ports {
-		containerPort, protocol, ok := parseDockerNatPort(port)
+		containerPort, protocol, ok := parseDockerNatPort(string(port))
 		if !ok || containerPort == dockerEnvdPort {
 			continue
 		}

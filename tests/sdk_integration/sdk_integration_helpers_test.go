@@ -19,6 +19,7 @@ import (
 	_ "e2b-local/internal/backends/applecontainer"
 	_ "e2b-local/internal/backends/docker"
 	_ "e2b-local/internal/backends/orbstack"
+	_ "e2b-local/internal/backends/sbx"
 	gateway "e2b-local/internal/gateway"
 	"e2b-local/internal/orbctl"
 

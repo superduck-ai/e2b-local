@@ -395,6 +395,43 @@ applecontainer:
 	}
 }
 
+func TestLoadConfigReadsSbxRuntime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := []byte(`
+runtime:
+  type: "sbx"
+
+sbx:
+  default_image: "e2b-local/sbx-envd:test"
+  health_timeout_seconds: 60
+  published_ports: [8080]
+  volume_host_path: "volumes"
+  templates:
+    sbx:
+      image: "e2b-local/sbx-envd:test"
+      memory: "2GB"
+      cpus: 2
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load sbx config: %v", err)
+	}
+	if cfg.Runtime.Type != "sbx" {
+		t.Fatalf("expected sbx runtime, got %q", cfg.Runtime.Type)
+	}
+	if cfg.Sbx.DefaultImage != "e2b-local/sbx-envd:test" || len(cfg.Sbx.PublishedPorts) != 1 || cfg.Sbx.PublishedPorts[0] != 8080 {
+		t.Fatalf("unexpected user-configured sbx values: %#v", cfg.Sbx)
+	}
+	if want := filepath.Join(dir, "volumes"); cfg.Sbx.VolumeHostPath != want {
+		t.Fatalf("expected sbx volume path %q, got %q", want, cfg.Sbx.VolumeHostPath)
+	}
+}
+
 func TestAppleContainerRuntimeConfigValidate(t *testing.T) {
 	validConfig := func() AppleContainerRuntimeConfig {
 		return AppleContainerRuntimeConfig{

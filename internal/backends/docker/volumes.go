@@ -451,6 +451,15 @@ func (r *DockerRuntime) ensureLocalVolume(volumeID string) (RuntimeVolume, strin
 	return volume, dir, nil
 }
 
+// EnsureLocalVolumeHostDir returns the managed host directory used by a volume
+// mount. Other local runtimes use this to expose the exact same volume and
+// content API without duplicating the path-safety implementation.
+func (r *DockerRuntime) EnsureLocalVolumeHostDir(volumeID string) (RuntimeVolume, string, error) {
+	r.volumeMountMu.RLock()
+	defer r.volumeMountMu.RUnlock()
+	return r.ensureLocalVolume(volumeID)
+}
+
 func (r *DockerRuntime) ensureLocalVolumeRoot() (string, error) {
 	root := strings.TrimSpace(r.cfg.VolumeHostPath)
 	if root == "" {

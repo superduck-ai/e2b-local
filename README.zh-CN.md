@@ -7,8 +7,9 @@
 - Docker Engine API 管理的容器
 - OrbStack CLI 管理的 Linux VM
 - macOS 上通过原生 XPC 服务管理的 Apple Container
+- 本机 `sbx` 与 `sandboxd` 服务管理的 Docker Sandboxes microVM
 
-HTTP 层尽量贴近 E2B OpenAPI schema；Docker、OrbStack 和 Apple Container 的具体行为放在独立 backend package 里。
+HTTP 层尽量贴近 E2B OpenAPI schema；Docker、OrbStack、Apple Container 和 SBX 的具体行为放在独立 backend package 里。
 
 ## 快速开始
 
@@ -130,6 +131,7 @@ func main() {
 - Docker volume 是 `docker.volume_host_path` 下由 e2b-local 管理的本地目录，创建 sandbox 时会按请求路径 bind mount 进去。
 - OrbStack volume 是 `orbstack.volume_host_path` 下的本地目录，会按需 mount 到 sandbox VM。
 - Apple Container volume 使用 Apple Container 原生 named volume，并在创建 sandbox 时按请求挂载。
+- SBX volume 是 `sbx.volume_host_path` 下的本地目录，会通过 `sandboxd` workspace 挂载到 microVM。
 - SDK 在创建 sandbox 后会收到该 sandbox 的直连 `envdURL`，所以 commands、filesystem、PTY 和 streaming 调用会直接访问 sandbox runtime。
 
 ## 当前状态
@@ -144,6 +146,7 @@ func main() {
 - Docker runtime：创建、暂停、恢复、删除、重启恢复、读取日志和采集容器 stats。
 - OrbStack runtime：通过 OrbStack socket clone/start/stop/delete VM，把 `envd` 安装为 systemd service，管理 volume mount，并且无需 fork OrbStack CLI 创建 snapshot。
 - Apple Container runtime：通过 `container-apiserver` XPC 创建、暂停、恢复、删除、重启恢复 sandbox，并管理 volume mount；sandbox 生命周期不 shell out 到 `container` CLI。
+- SBX runtime：通过认证后的本地 `sandboxd` 创建 microVM，提供生命周期、重启恢复、volume、日志、metrics、PTY 和反向隧道；snapshot 明确不支持。
 
 ## 目录结构
 
@@ -152,6 +155,7 @@ func main() {
 - `internal/backends/docker`：Docker runtime 实现。
 - `internal/backends/orbstack`：OrbStack VM runtime 实现。
 - `internal/backends/applecontainer`：Apple Container XPC runtime 实现。
+- `internal/backends/sbx`：Docker Sandboxes runtime 实现。
 - `internal/e2bapi`：生成的 OpenAPI client/server/DTO 代码。
 - `envd-bin`：随仓库管理的 Linux `envd` 二进制，供 Docker、OrbStack 和 Apple Container 使用。
 - `scripts`：本地 smoke test 和辅助脚本。
@@ -162,7 +166,7 @@ backend 通过 `RegisterSandboxRuntimeFactory` 注册，所以 runtime 逻辑不
 ## 依赖
 
 - Go 1.25 或更新版本。
-- Docker、OrbStack 或 Apple Container，取决于选择的 runtime。
+- Docker、OrbStack、Apple Container 或 Docker Sandboxes，取决于选择的 runtime。
 - `envd-bin` 中对应架构的 Linux `envd` 二进制。
 
 仓库当前管理：
@@ -174,7 +178,7 @@ Docker 会 inspect 选中镜像的架构，并把匹配的 `envd` 二进制 bind
 
 ## 配置
 
-完整本地配置见 `config.example.yaml`。Docker 专用样例见 `config.docker.yaml`，OrbStack 专用样例见 `config.orb.yaml`，Apple Container 专用样例见 `config.applecontainer.yaml`。
+完整本地配置见 `config.example.yaml`。Docker 专用样例见 `config.docker.yaml`，OrbStack 专用样例见 `config.orb.yaml`，Apple Container 专用样例见 `config.applecontainer.yaml`，Docker Sandboxes 专用样例见 `config.sbx.yaml`。
 
 一个精简 Docker 配置：
 
@@ -203,7 +207,7 @@ docker:
 
 重要字段：
 
-- `runtime.type` 支持 `docker`、`orbstack` 和 `applecontainer`。
+- `runtime.type` 支持 `docker`、`orbstack`、`applecontainer` 和 `sbx`。
 - `docker.host` 可以省略。gateway 会依次使用 `DOCKER_HOST`、当前用户的 OrbStack socket，以及 `unix:///var/run/docker.sock`。
 - Docker templates 来自本机已有 tag 的 Docker images。gateway 不会自动 pull 镜像；请先在本机 pull、build 并打好 tag 再创建 sandbox。
 - `traffic.advertised_host` 是端口查询接口返回给用户的 IP 或 host。留空时 gateway 会在启动时自动探测。`traffic.interface` 可以强制使用 `en0` 这类宿主机网卡；否则 macOS 回退到 UDP 探测，Linux 会先尝试 netlink 路由表，再回退到 UDP 探测。
@@ -314,6 +318,44 @@ Docker runtime 下：
 }
 ```
 
+## Docker Sandboxes（SBX）Runtime
+
+SBX 使用本机安装的 Docker Sandboxes 控制面。先构建并导入可复用的
+SBX base image：
+
+```bash
+scripts/build-sbx-image.sh
+go run ./cmd/e2b-local --config config.sbx.yaml
+```
+
+构建会从当前 `e2b-local` 源码编译 `sbx-init` 和 `sbx-tunnel`，并复制仓库
+内已版本管理、与目标架构匹配的 `envd` 二进制。最终镜像只有 `envd`、
+`sbx-init` 和 `sbx-tunnel`，不包含源码树或构建期依赖。
+
+这一步不在每次创建 sandbox 时执行；base image 会一直复用。普通 OCI 业务
+镜像只需从它派生，例如：
+
+```dockerfile
+FROM e2b-local/sbx-envd:dev
+RUN apk add --no-cache python3
+```
+
+未包含这些 bootstrap 二进制的任意 OCI image 不能直接作为 SBX template，
+因为 `sandboxd` 会接管 entrypoint；这不是每个 sandbox 都要构建自定义镜像。
+
+默认要求先执行 `sbx login`，并且只通过已认证的 `sandboxd` 管理生命周期；
+不存在未登录 Docker fallback。
+
+SBX 支持 create/pause/resume/delete、gateway 重启恢复、volume、logs、
+metrics、Docker hijack PTY，以及 guest `envd` 的反向隧道。SBX 的 snapshot
+目前明确不支持：Docker Sandboxes 能保存简单 CLI sandbox，但在完整的
+e2b-local bootstrap sandbox 上 native save 会触发 overlay commit 错误。gateway
+返回 `501`，不会把不可靠的部分实现冒充成 snapshot。
+
+SBX 的本地 state 文件仅保存 gateway 重启和 native stop/start 后重新启动
+envd/反向隧道所需的私有 bootstrap 元数据；它不是 snapshot，也不会提供
+额外的快速唤醒语义。
+
 ## OrbStack Runtime
 
 当每个 sandbox 需要运行在完整 Linux VM 内时，使用 OrbStack runtime：
@@ -377,8 +419,8 @@ container image pull --platform linux/arm64 docker.io/library/debian:bookworm-sl
 - 必须配置默认 kernel。如果 `container run` 报 `default kernel not configured`，执行 `container system kernel set --recommended`。
 - Template image 必须先通过 Apple Container 拉到本机。只测试生命周期时可以用 Alpine 这类小镜像；E2B SDK command execution 需要镜像内有 `/bin/bash`，`debian:bookworm-slim` 已验证可用。
 - 除非选中 template 设置了 `prebaked_envd_path`，backend 会从 `applecontainer.envd_binary` 复制 envd。
-- envd 使用显式 localhost published port，因为 Apple Container 不支持 `hostPort: 0` 自动分配；如果 Apple Container 返回端口冲突，backend 会换端口重试。
-- `pause` 映射为 Apple Container stop；`resume` 会 bootstrap 既有 container，并复用已持久化的 published port。
+- envd 使用显式 localhost published port，因为 Apple Container 不支持 `hostPort: 0` 自动分配；如果 Apple Container 返回端口冲突，backend 会换端口重试。若本机端口代理不可用，runtime 会返回可直连的 guest IPv4 URL。
+- `pause` 映射为 Apple Container stop；`resume` 会 bootstrap 既有 container，并复用已持久化的 published port。guest-IP `envdURL` 在 stop/start 后可能变化，resume 响应会返回更新后的 URL。
 - Volume 使用 Apple Container named volume，并在创建 sandbox 时按请求挂载。
 
 能力矩阵：

@@ -1,0 +1,16 @@
+server:
+  addr: "127.0.0.1:3000"
+
+runtime:
+  type: "sbx"
+
+sbx:
+  default_image: "e2b-local/sbx-envd:dev"
+  health_timeout_seconds: 60
+  published_ports: []
+  volume_host_path: "~/.e2b-local/volumes/sbx"
+  templates:
+    sbx:
+      image: "e2b-local/sbx-envd:dev"
+      memory: "2GB"
+      cpus: 2
