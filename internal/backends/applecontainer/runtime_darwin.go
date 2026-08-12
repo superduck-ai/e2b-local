@@ -569,15 +569,15 @@ func (r *AppleContainerRuntime) RestoreSandboxes(ctx context.Context) ([]gateway
 		}
 
 		records = append(records, gateway.SandboxRecord{
-			ID:                  sandboxID,
-			TemplateID:          strings.TrimSpace(labels[appleLocalSandboxTemplateIDLabel]),
-			Metadata:            stringMapFromLabel(labels[appleLocalSandboxMetadataLabel]),
-			EnvdURL:             info.EnvdURL,
-			RuntimeInfo:         info,
-			CreatedAt:           createdAt,
-			EndAt:               endAt,
-			State:               state,
-			AllowInternetAccess: boolPtrFromLabel(labels[appleLocalSandboxAllowInternetLabel]),
+			ID:                   sandboxID,
+			TemplateID:           strings.TrimSpace(labels[appleLocalSandboxTemplateIDLabel]),
+			Metadata:             stringMapFromLabel(labels[appleLocalSandboxMetadataLabel]),
+			EnvdURL:              info.EnvdURL,
+			RuntimeInfo:          info,
+			CreatedAt:            createdAt,
+			EndAt:                endAt,
+			State:                state,
+			InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(boolPtrFromLabel(labels[appleLocalSandboxAllowInternetLabel])),
 		})
 	}
 	sort.Slice(records, func(i, j int) bool {

@@ -684,8 +684,8 @@ func TestAppleContainerRuntimeRestoreSandboxesMapsMetadataAndPausedState(t *test
 	if record.Metadata["source"] != "restore" || !record.CreatedAt.Equal(created) || !record.EndAt.Equal(end) {
 		t.Fatalf("expected metadata and dates to round-trip, got %#v", record)
 	}
-	if record.AllowInternetAccess == nil || *record.AllowInternetAccess {
-		t.Fatalf("expected allow-internet=false, got %#v", record.AllowInternetAccess)
+	if record.InternetAccessPolicy != gateway.InternetAccessDenied {
+		t.Fatalf("expected allow-internet=false, got %q", record.InternetAccessPolicy)
 	}
 	if len(record.RuntimeInfo.VolumeMounts) != 1 || record.RuntimeInfo.VolumeMounts[0].MountPath != "/data" {
 		t.Fatalf("expected volume mounts to restore, got %#v", record.RuntimeInfo.VolumeMounts)

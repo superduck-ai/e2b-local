@@ -17,12 +17,10 @@ import (
 )
 
 const (
-	defaultSandboxTimeoutSeconds = 300
-	DefaultSandboxTimeoutSeconds = defaultSandboxTimeoutSeconds
-	maxSandboxListLimit          = 100
-	MaxSandboxListLimit          = maxSandboxListLimit
-	localTeamID                  = "00000000-0000-0000-0000-000000000001"
-	localNodeID                  = "local"
+	maxSandboxListLimit = 100
+	MaxSandboxListLimit = maxSandboxListLimit
+	localTeamID         = "00000000-0000-0000-0000-000000000001"
+	localNodeID         = "local"
 )
 
 type GatewayCallbacks struct {
@@ -419,6 +417,9 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 	if templateID == "" {
 		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "templateID is required")
 	}
+	if req.Timeout != nil && *req.Timeout < 0 {
+		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "timeout must be greater than or equal to 0")
+	}
 
 	if err := a.validateTemplateID(templateID); err != nil {
 		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "%s", err.Error())
@@ -454,15 +455,15 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 	}
 
 	record, err := a.store.Create(SandboxRecord{
-		ID:                  sandboxID,
-		TemplateID:          templateID,
-		Metadata:            metadata,
-		EnvdURL:             runtimeInfo.EnvdURL,
-		RuntimeInfo:         runtimeInfo,
-		CreatedAt:           now,
-		EndAt:               endAt,
-		State:               string(e2bapi.Running),
-		AllowInternetAccess: req.AllowInternetAccess,
+		ID:                   sandboxID,
+		TemplateID:           templateID,
+		Metadata:             metadata,
+		EnvdURL:              runtimeInfo.EnvdURL,
+		RuntimeInfo:          runtimeInfo,
+		CreatedAt:            now,
+		EndAt:                endAt,
+		State:                string(e2bapi.Running),
+		InternetAccessPolicy: InternetAccessPolicyFromBoolPtr(req.AllowInternetAccess),
 	})
 	if err != nil {
 		if cleanupErr := a.runtime.DeleteSandbox(context.Background(), runtimeInfo); cleanupErr != nil {
@@ -470,6 +471,7 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 		}
 		return SandboxRecord{}, err
 	}
+	a.syncSandboxDeadline(record)
 
 	a.logger.Printf("sandbox create sandbox_id=%s template_id=%s envd_url=%s container_id=%s",
 		record.ID,
@@ -477,7 +479,6 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 		record.EnvdURL,
 		record.RuntimeInfo.ContainerID,
 	)
-
 	return record, nil
 }
 
@@ -539,11 +540,26 @@ func (a *App) defaultGetSandbox(ctx context.Context, sandboxID string) (SandboxR
 }
 
 func (a *App) activeSandboxRecord(ctx context.Context, sandboxID string) (SandboxRecord, error) {
-	record, ok := a.store.Get(sandboxID)
-	if !ok {
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
 		return SandboxRecord{}, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
-	record, exists, err := a.reconcileSandboxRecord(ctx, record)
+	defer entry.lifecycleMu.Unlock()
+
+	return a.activeSandboxRecordLocked(ctx, sandboxID)
+}
+
+// activeSandboxRecordLocked 在调用方持有 lifecycleMu 时，确认沙箱仍可执行生命周期操作。
+//
+// 它会在锁内重新读取 Store，并通过 reconcileSandboxRecordLocked 检查截止时间和
+// runtime 真实状态。成功返回表示沙箱尚未过期、runtime 资源仍存在，并且返回记录
+// 已与 runtime 对齐。记录不存在、已经过期或 runtime 资源已消失时返回 404。
+//
+// 发现过期时，请求只安排后台清理并返回 404，不会同步等待 runtime 删除；清理失败
+// 会保留记录并安排重试，但 connect、timeout、refresh 等操作仍不能延长已经到期的
+// EndAt。调用方必须已经持有该 sandbox 的 lifecycleMu；本函数不会重复加锁。
+func (a *App) activeSandboxRecordLocked(ctx context.Context, sandboxID string) (SandboxRecord, error) {
+	record, exists, err := a.reconcileSandboxRecordLocked(ctx, sandboxID)
 	if err != nil {
 		return SandboxRecord{}, err
 	}
@@ -567,67 +583,123 @@ func (a *App) reconcileSandboxRecords(ctx context.Context, records []SandboxReco
 	return reconciled, nil
 }
 
+// reconcileSandboxRecord 在获取沙箱生命周期锁后，把 Store 记录与截止时间和 runtime 状态对齐。
+//
+// 返回的三个值分别是：对齐后的最新记录、该记录是否仍然存在、执行过程中是否出错。
+// 调用方通常先拿到一条 Store 记录，再调用本函数确认它仍然有效，避免把已经过期或
+// 已经被外部清理的沙箱返回给客户端。
+//
+// 本函数只负责获取 lifecycleMu，实际处理由 reconcileSandboxRecordLocked 完成。
+// 已经持有锁的生命周期接口必须直接调用 Locked 版本，避免重复获取非重入锁而死锁。
 func (a *App) reconcileSandboxRecord(ctx context.Context, record SandboxRecord) (SandboxRecord, bool, error) {
-	if sandboxRecordExpired(record, time.Now().UTC()) {
-		if a.runtime != nil {
-			if err := a.runtime.DeleteSandbox(ctx, record.RuntimeInfo); err != nil {
-				return SandboxRecord{}, false, err
-			}
-		}
-		deleted, err := a.store.Delete(record.ID)
-		if err != nil {
-			return SandboxRecord{}, false, err
-		}
-		if deleted {
-			a.logger.Printf("sandbox reconcile removed expired sandbox_id=%s container_id=%s", record.ID, record.RuntimeInfo.ContainerID)
-		}
+	entry, exists := a.store.lockSandbox(record.ID)
+	if !exists {
+		return SandboxRecord{}, false, nil
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	return a.reconcileSandboxRecordLocked(ctx, record.ID)
+}
+
+// reconcileSandboxRecordLocked 在生命周期锁内对齐沙箱的逻辑状态和 runtime 真实状态。
+//
+// 调用方必须已经持有该 sandbox 的 lifecycleMu。函数会重新读取最新 Store 记录，
+// 防止使用加锁前的旧快照。running 沙箱到达 EndAt 后会安排后台过期清理，并始终
+// 返回 exists=false；即使 runtime 删除失败并等待重试，也不会再暴露为可操作沙箱。
+// 未过期时，如果 runtime 支持 Inspect，则检查资源是否存在，并用真实 paused/running
+// 状态及连接信息修正 Store；runtime 资源已消失时会清理 Store 映射并返回不存在。
+//
+// 成功时返回对齐后的记录和 exists=true。Store 记录不存在、沙箱已过期或 runtime
+// 资源不存在时返回 exists=false。Inspect 或 Store 更新失败时返回错误。副作用可能
+// 包括安排过期清理、删除失踪沙箱、更新 Store、同步 deadline timer。
+func (a *App) reconcileSandboxRecordLocked(ctx context.Context, sandboxID string) (SandboxRecord, bool, error) {
+	current, ok := a.store.Get(sandboxID)
+	if !ok {
+		return SandboxRecord{}, false, nil
+	}
+
+	if sandboxRecordExpired(current, time.Now().UTC()) {
+		// 请求路径只负责确认逻辑过期。复用或补建已经到期的 timer，让 callback
+		// 在本次请求释放 lifecycleMu 后执行物理删除；这样 runtime 卡住时不会
+		// 让 HTTP handler 忽略请求取消并同步等待最多 30 秒。
+		a.syncSandboxDeadline(current)
+		// 过期是不可逆的业务状态。runtime 清理失败只影响物理清理进度，
+		// 不能允许后续生命周期请求通过修改 EndAt 复活该沙箱。
 		return SandboxRecord{}, false, nil
 	}
 
 	inspector, ok := a.runtime.(SandboxRuntimeInspector)
 	if !ok {
-		return record, true, nil
+		return current, true, nil
 	}
-	return a.reconcileSandboxRecordWithInspector(ctx, inspector, record)
+
+	return a.reconcileSandboxRecordWithInspector(ctx, inspector, current)
 }
 
+// reconcileSandboxRecordWithInspector 通过 runtime inspector 检查容器真实状态，
+// 并据此更新 Store 记录。
+//
+// 它处理两种主要情况：
+//  1. 容器已经不存在：best-effort 删除 Store 记录，清理掉“runtime 里没了但 Store 里还有”
+//     的残留状态。
+//  2. 容器仍然存在：把 inspect 得到的 state、IP、端口等合并到现有记录，然后刷新过期定时器。
 func (a *App) reconcileSandboxRecordWithInspector(ctx context.Context, inspector SandboxRuntimeInspector, record SandboxRecord) (SandboxRecord, bool, error) {
+	// 向 runtime 查询容器的真实存在性和运行时信息。
 	inspection, err := inspector.InspectSandbox(ctx, record.RuntimeInfo)
 	if err != nil {
 		return SandboxRecord{}, false, err
 	}
+
+	// 情况一：runtime 侧已经没有这个容器，需要把 Store 记录也清理掉。
 	if !inspection.Exists {
-		if a.runtime != nil {
-			if err := a.runtime.DeleteSandbox(ctx, record.RuntimeInfo); err != nil {
-				a.logger.Printf("sandbox reconcile cleanup failed sandbox_id=%s container_id=%s error=%v", record.ID, record.RuntimeInfo.ContainerID, err)
-			}
-		}
-		deleted, err := a.store.Delete(record.ID)
+		// bestEffort 策略表示 Store 记录删除失败不会阻塞 reconcile；runtime 清理失败只记日志。
+		result, err := a.deleteSandbox(ctx, record, sandboxRuntimeDeleteBestEffort)
 		if err != nil {
 			return SandboxRecord{}, false, err
 		}
-		if deleted {
-			a.logger.Printf("sandbox reconcile removed missing sandbox_id=%s container_id=%s", record.ID, record.RuntimeInfo.ContainerID)
+		if result.RuntimeError != nil {
+			a.logger.Printf("sandbox reconcile cleanup failed sandbox_id=%s container_id=%s error=%v", record.ID, record.RuntimeInfo.ContainerID, result.RuntimeError)
 		}
-		return SandboxRecord{}, false, nil
+		if result.Deleted {
+			a.logger.Printf("sandbox reconcile removed missing sandbox_id=%s container_id=%s", record.ID, record.RuntimeInfo.ContainerID)
+			return SandboxRecord{}, false, nil
+		}
+		// Store 记录可能已经被其他并发流程删除，再次读取并把结果返回给调用方。
+		updated, exists := a.store.Get(record.ID)
+		return updated, exists, nil
 	}
 
+	// 情况二：容器还在，用 inspect 结果更新 Store 中的状态和运行时信息。
 	state := strings.TrimSpace(inspection.State)
 	if state == "" {
+		// runtime 没有返回状态时保留原状态，避免把有效状态清空。
 		state = record.State
 	}
 	runtimeInfo := mergeSandboxRuntimeInfo(record.RuntimeInfo, inspection.Info)
-	updated, ok, err := a.store.SetStateRuntimeInfoAndEndAt(record.ID, state, runtimeInfo, time.Time{})
+
+	// 写回 Store；如果记录在这期间被删除，ok 会为 false，需要重新读取。
+	updated, ok, err := a.store.SetStateAndRuntimeInfo(record.ID, state, runtimeInfo)
 	if err != nil {
 		return SandboxRecord{}, false, err
 	}
 	if !ok {
-		return SandboxRecord{}, false, nil
+		current, exists := a.store.Get(record.ID)
+		return current, exists, nil
 	}
+
+	// 状态或截止时间可能发生变化，重新同步内存中的过期定时器。
+	a.syncSandboxDeadline(updated)
 	return updated, true, nil
 }
 
+// sandboxRecordExpired 判断一条沙箱记录是否已经到达过期时间。
+//
+// 只有 Running 状态且有明确 EndAt 的记录才可能被认为过期；暂停、删除中或没有
+// 截止时间的记录永远不会过期。
 func sandboxRecordExpired(record SandboxRecord, now time.Time) bool {
+	if record.State != string(e2bapi.Running) {
+		return false
+	}
 	endAt := recordEndAt(record)
 	return !endAt.IsZero() && !now.Before(endAt)
 }
@@ -664,20 +736,22 @@ func mergeSandboxRuntimeInfo(existing SandboxRuntimeInfo, update SandboxRuntimeI
 }
 
 func (a *App) defaultKillSandbox(ctx context.Context, sandboxID string) error {
-	record, err := a.activeSandboxRecord(ctx, sandboxID)
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
+		return gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	record, err := a.activeSandboxRecordLocked(ctx, sandboxID)
 	if err != nil {
 		return err
 	}
 
-	if err := a.runtime.DeleteSandbox(ctx, record.RuntimeInfo); err != nil {
-		return err
-	}
-
-	deleted, err := a.store.Delete(sandboxID)
+	result, err := a.deleteSandbox(ctx, record, sandboxRuntimeDeleteRequired)
 	if err != nil {
 		return err
 	}
-	if !deleted {
+	if !result.Deleted {
 		return gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
 
@@ -686,11 +760,17 @@ func (a *App) defaultKillSandbox(ctx context.Context, sandboxID string) error {
 }
 
 func (a *App) defaultPauseSandbox(ctx context.Context, sandboxID string) (SandboxRecord, error) {
-	record, err := a.activeSandboxRecord(ctx, sandboxID)
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
+		return SandboxRecord{}, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	record, err := a.activeSandboxRecordLocked(ctx, sandboxID)
 	if err != nil {
 		return SandboxRecord{}, err
 	}
-	if record.State == string(e2bapi.Paused) {
+	if record.State != string(e2bapi.Running) {
 		return SandboxRecord{}, gatewayError(http.StatusConflict, "sandbox %s is already paused", sandboxID)
 	}
 
@@ -705,17 +785,28 @@ func (a *App) defaultPauseSandbox(ctx context.Context, sandboxID string) (Sandbo
 	if !ok {
 		return SandboxRecord{}, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
+	a.syncSandboxDeadline(record)
 
 	a.logger.Printf("sandbox pause sandbox_id=%s action=mark_paused", record.ID)
 	return record, nil
 }
 
 func (a *App) defaultResumeSandbox(ctx context.Context, sandboxID string, req e2bapi.ResumedSandbox) (SandboxRecord, error) {
-	record, err := a.activeSandboxRecord(ctx, sandboxID)
+	if req.Timeout != nil && *req.Timeout < 0 {
+		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "timeout must be greater than or equal to 0")
+	}
+
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
+		return SandboxRecord{}, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	record, err := a.activeSandboxRecordLocked(ctx, sandboxID)
 	if err != nil {
 		return SandboxRecord{}, err
 	}
-	if record.State == string(e2bapi.Running) {
+	if record.State != string(e2bapi.Paused) {
 		return SandboxRecord{}, gatewayError(http.StatusConflict, "sandbox %s is already running", sandboxID)
 	}
 
@@ -724,10 +815,8 @@ func (a *App) defaultResumeSandbox(ctx context.Context, sandboxID string, req e2
 		return SandboxRecord{}, err
 	}
 
-	endAt := record.EndAt
-	if req.Timeout != nil && *req.Timeout > 0 {
-		endAt = time.Now().UTC().Add(time.Duration(*req.Timeout) * time.Second)
-	}
+	timeoutSeconds := requestTimeout(req.Timeout)
+	endAt := time.Now().UTC().Add(time.Duration(timeoutSeconds) * time.Second)
 	record, ok, err := a.store.SetStateRuntimeInfoAndEndAt(sandboxID, string(e2bapi.Running), runtimeInfo, endAt)
 	if err != nil {
 		return SandboxRecord{}, err
@@ -735,11 +824,22 @@ func (a *App) defaultResumeSandbox(ctx context.Context, sandboxID string, req e2
 	if !ok {
 		return SandboxRecord{}, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
+	a.syncSandboxDeadline(record)
 	return record, nil
 }
 
 func (a *App) defaultConnectSandbox(ctx context.Context, sandboxID string, req e2bapi.ConnectSandbox) (SandboxRecord, bool, error) {
-	record, err := a.activeSandboxRecord(ctx, sandboxID)
+	if req.Timeout < 0 {
+		return SandboxRecord{}, false, gatewayError(http.StatusBadRequest, "timeout must be greater than or equal to 0")
+	}
+
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
+		return SandboxRecord{}, false, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	record, err := a.activeSandboxRecordLocked(ctx, sandboxID)
 	if err != nil {
 		return SandboxRecord{}, false, err
 	}
@@ -750,9 +850,12 @@ func (a *App) defaultConnectSandbox(ctx context.Context, sandboxID string, req e
 		if err != nil {
 			return SandboxRecord{}, false, err
 		}
-		endAt := record.EndAt
-		if req.Timeout > 0 {
-			endAt = time.Now().UTC().Add(time.Duration(req.Timeout) * time.Second)
+
+		// 从 runtime 恢复完成的时刻开始计算新的存活时间，避免等待锁、
+		// runtime 对账和恢复过程消耗调用方请求的 timeout。
+		endAt := time.Now().UTC().Add(time.Duration(req.Timeout) * time.Second)
+		if record.EndAt.After(endAt) {
+			endAt = record.EndAt
 		}
 		updated, ok, err := a.store.SetStateRuntimeInfoAndEndAt(sandboxID, string(e2bapi.Running), runtimeInfo, endAt)
 		if err != nil {
@@ -763,7 +866,20 @@ func (a *App) defaultConnectSandbox(ctx context.Context, sandboxID string, req e
 		}
 		record = updated
 		resumed = true
+	} else {
+		// lifecycleMu 和 runtime 对账完成后再取当前时间，使 timeout 从本次
+		// connect 真正生效的时刻开始计算。
+		endAt := time.Now().UTC().Add(time.Duration(req.Timeout) * time.Second)
+		updated, ok, err := a.store.ExtendEndAt(sandboxID, endAt)
+		if err != nil {
+			return SandboxRecord{}, false, err
+		}
+		if !ok {
+			return SandboxRecord{}, false, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+		}
+		record = updated
 	}
+	a.syncSandboxDeadline(record)
 
 	a.logger.Printf("sandbox connect sandbox_id=%s envd_url=%s resumed=%t", record.ID, record.EnvdURL, resumed)
 	return record, resumed, nil
@@ -774,23 +890,33 @@ func (a *App) defaultSetSandboxTimeout(ctx context.Context, sandboxID string, re
 		return gatewayError(http.StatusBadRequest, "timeout must be greater than or equal to 0")
 	}
 
-	if _, err := a.activeSandboxRecord(ctx, sandboxID); err != nil {
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
+		return gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	if _, err := a.activeSandboxRecordLocked(ctx, sandboxID); err != nil {
 		return err
 	}
 
+	// 等待 lifecycleMu 和 runtime 对账的耗时不应占用新 timeout。
 	endAt := time.Now().UTC().Add(time.Duration(req.Timeout) * time.Second)
-	if _, ok, err := a.store.SetEndAt(sandboxID, endAt); err != nil {
+	record, ok, err := a.store.SetEndAt(sandboxID, endAt)
+	if err != nil {
 		return err
-	} else if !ok {
+	}
+	if !ok {
 		return gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
+	a.syncSandboxDeadline(record)
 
 	a.logger.Printf("sandbox timeout sandbox_id=%s timeout_seconds=%d", sandboxID, req.Timeout)
 	return nil
 }
 
 func (a *App) defaultRefreshSandbox(ctx context.Context, sandboxID string, req e2bapi.PostSandboxesSandboxIDRefreshesJSONBody) error {
-	duration := defaultSandboxTimeoutSeconds
+	duration := DefaultSandboxTimeoutSeconds
 	if req.Duration != nil {
 		duration = *req.Duration
 	}
@@ -801,20 +927,26 @@ func (a *App) defaultRefreshSandbox(ctx context.Context, sandboxID string, req e
 		return gatewayError(http.StatusBadRequest, "duration must be less than or equal to 3600")
 	}
 
-	record, err := a.activeSandboxRecord(ctx, sandboxID)
-	if err != nil {
+	entry, exists := a.store.lockSandbox(sandboxID)
+	if !exists {
+		return gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
+	}
+	defer entry.lifecycleMu.Unlock()
+
+	if _, err := a.activeSandboxRecordLocked(ctx, sandboxID); err != nil {
 		return err
 	}
 
+	// 从本次 refresh 在锁内真正生效的时刻开始续期。
 	endAt := time.Now().UTC().Add(time.Duration(duration) * time.Second)
-	if record.EndAt.After(endAt) {
-		endAt = record.EndAt
-	}
-	if _, ok, err := a.store.SetEndAt(sandboxID, endAt); err != nil {
+	record, ok, err := a.store.ExtendEndAt(sandboxID, endAt)
+	if err != nil {
 		return err
-	} else if !ok {
+	}
+	if !ok {
 		return gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
+	a.syncSandboxDeadline(record)
 
 	a.logger.Printf("sandbox refresh sandbox_id=%s duration_seconds=%d", sandboxID, duration)
 	return nil
@@ -2315,13 +2447,6 @@ func sandboxVolumeMounts(volumeMounts *[]e2bapi.SandboxVolumeMount) []VolumeMoun
 		})
 	}
 	return result
-}
-
-func requestTimeout(timeout *int32) int32 {
-	if timeout == nil || *timeout <= 0 {
-		return defaultSandboxTimeoutSeconds
-	}
-	return *timeout
 }
 
 func paginationLimit(limit *int32) (int, error) {

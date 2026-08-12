@@ -31,6 +31,7 @@ type App struct {
 	builds     *templateBuildManager
 	runtime    SandboxRuntime
 	callbacks  GatewayCallbacks
+	deadlines  *sandboxDeadlineManager
 }
 
 func NewApp(cfg Config, logger *log.Logger) http.Handler {
@@ -69,6 +70,7 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 		management: management,
 		builds:     builds,
 		runtime:    runtime,
+		deadlines:  newSandboxDeadlineManager(),
 	}
 	app.callbacks = callbacks.WithDefaults(DefaultGatewayCallbacks(app))
 	app.unimplementedGatewayAPI.fallback = app.handleUnimplementedGatewayRoute
@@ -78,6 +80,7 @@ func NewAppWithCallbacks(cfg Config, logger *log.Logger, runtime SandboxRuntime,
 	if err := app.reconcileStoredSandboxes(context.Background()); err != nil {
 		return nil, err
 	}
+	app.restoreSandboxDeadlines()
 
 	gin.SetMode(gin.ReleaseMode)
 
@@ -118,10 +121,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
-	if a.builds == nil {
-		return nil
+	if err := a.deadlines.shutdown(ctx); err != nil {
+		return err
 	}
-	return a.builds.shutdown(ctx)
+	if a.builds != nil {
+		return a.builds.shutdown(ctx)
+	}
+	return nil
 }
 
 func (a *App) restoreRuntimeSandboxes(ctx context.Context) error {
@@ -195,7 +201,7 @@ func (a *App) enrichRestoredSandboxRecord(record SandboxRecord) (SandboxRecord, 
 		record.CreatedAt = time.Now().UTC()
 	}
 	if record.EndAt.IsZero() {
-		record.EndAt = time.Now().UTC().Add(time.Duration(defaultSandboxTimeoutSeconds) * time.Second)
+		record.EndAt = defaultSandboxEndAt(record.CreatedAt)
 	}
 	if strings.TrimSpace(record.State) == "" {
 		record.State = string(e2bapi.Running)

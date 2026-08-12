@@ -10,3 +10,4 @@
 !/envd-bin/
 !/envd-bin/**
 /orbctl
+.DS_Store

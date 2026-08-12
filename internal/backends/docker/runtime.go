@@ -60,9 +60,9 @@ const dockerEnvdHostIP = "127.0.0.1"
 const dockerPublishedHostIP = "0.0.0.0"
 const dockerEnvdBinaryAMD64 = "envd-bin/envd-linux-amd64"
 const dockerEnvdBinaryARM64 = "envd-bin/envd-linux-arm64"
+const dockerPacketCaptureCapability = "NET_RAW"
 const dockerFUSECapability = "SYS_ADMIN"
 const dockerFUSEDevicePath = "/dev/fuse"
-const defaultSandboxTimeoutSeconds = gateway.DefaultSandboxTimeoutSeconds
 const maxSandboxListLimit = gateway.MaxSandboxListLimit
 
 const (
@@ -244,7 +244,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 	}
 	labelReq := req
 	labelReq.VolumeMounts = volumeMounts
-	fuseCapabilities, fuseDevices := dockerFUSEPermissions(r.cfg.EnableFUSE)
+	sandboxCapabilities, fuseDevices := dockerSandboxPermissions(r.cfg.EnableFUSE)
 
 	resp, err := r.client.ContainerCreate(
 		ctx,
@@ -261,7 +261,7 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 			Init:         &initEnabled,
 			PortBindings: portBindings,
 			Mounts:       mounts,
-			CapAdd:       fuseCapabilities,
+			CapAdd:       sandboxCapabilities,
 			Resources: container.Resources{
 				Devices: fuseDevices,
 			},
@@ -321,12 +321,13 @@ func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCre
 	return info, nil
 }
 
-func dockerFUSEPermissions(enabled bool) ([]string, []container.DeviceMapping) {
-	if !enabled {
-		return nil, nil
+func dockerSandboxPermissions(fuseEnabled bool) ([]string, []container.DeviceMapping) {
+	capabilities := []string{dockerPacketCaptureCapability}
+	if !fuseEnabled {
+		return capabilities, nil
 	}
 
-	return []string{dockerFUSECapability}, []container.DeviceMapping{{
+	return append(capabilities, dockerFUSECapability), []container.DeviceMapping{{
 		PathOnHost:        dockerFUSEDevicePath,
 		PathInContainer:   dockerFUSEDevicePath,
 		CgroupPermissions: "rwm",
@@ -512,22 +513,22 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 	}
 
 	createdAt := dockerTimeLabel(labels[dockerLocalSandboxCreatedAtLabel], dockerImageCreatedAt(inspect.Created, now))
-	endAt := dockerTimeLabel(labels[dockerLocalSandboxEndAtLabel], now.Add(time.Duration(defaultSandboxTimeoutSeconds)*time.Second))
+	endAt := dockerTimeLabel(labels[dockerLocalSandboxEndAtLabel], createdAt.Add(time.Duration(gateway.DefaultSandboxTimeoutSeconds)*time.Second))
 	templateID := strings.TrimSpace(labels[dockerLocalSandboxTemplateIDLabel])
 	if templateID == "" {
 		templateID = dockerTemplateName(summary.Image)
 	}
 
 	return SandboxRecord{
-		ID:                  sandboxID,
-		TemplateID:          templateID,
-		Metadata:            dockerStringMapLabel(labels[dockerLocalSandboxMetadataLabel]),
-		EnvdURL:             info.EnvdURL,
-		RuntimeInfo:         info,
-		CreatedAt:           createdAt,
-		EndAt:               endAt,
-		State:               state,
-		AllowInternetAccess: dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel]),
+		ID:                   sandboxID,
+		TemplateID:           templateID,
+		Metadata:             dockerStringMapLabel(labels[dockerLocalSandboxMetadataLabel]),
+		EnvdURL:              info.EnvdURL,
+		RuntimeInfo:          info,
+		CreatedAt:            createdAt,
+		EndAt:                endAt,
+		State:                state,
+		InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel])),
 	}, true, nil
 }
 

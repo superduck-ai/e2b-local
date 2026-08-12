@@ -85,20 +85,51 @@ type SandboxPortResponse struct {
 	Protocol      string `json:"protocol,omitempty"`
 }
 
+type InternetAccessPolicy string
+
+const (
+	InternetAccessUnspecified InternetAccessPolicy = ""
+	InternetAccessAllowed     InternetAccessPolicy = "allowed"
+	InternetAccessDenied      InternetAccessPolicy = "denied"
+)
+
+func InternetAccessPolicyFromBoolPtr(value *bool) InternetAccessPolicy {
+	if value == nil {
+		return InternetAccessUnspecified
+	}
+	if *value {
+		return InternetAccessAllowed
+	}
+	return InternetAccessDenied
+}
+
+func (policy InternetAccessPolicy) BoolPtr() *bool {
+	switch policy {
+	case InternetAccessAllowed:
+		value := true
+		return &value
+	case InternetAccessDenied:
+		value := false
+		return &value
+	default:
+		return nil
+	}
+}
+
 type SandboxRecord struct {
-	ID                  string
-	TemplateID          string
-	Alias               *string
-	ClientID            string
-	EnvdVersion         string
-	Metadata            map[string]string
-	EnvdURL             string
-	RuntimeInfo         SandboxRuntimeInfo
-	CreatedAt           time.Time
-	EndAt               time.Time
-	State               string
-	CPUCount            int32
-	DiskSizeMB          int32
-	MemoryMB            int32
-	AllowInternetAccess *bool
+	ID                   string
+	TemplateID           string
+	Alias                string
+	ClientID             string
+	EnvdVersion          string
+	Metadata             map[string]string
+	EnvdURL              string
+	RuntimeInfo          SandboxRuntimeInfo
+	CreatedAt            time.Time
+	EndAt                time.Time
+	State                string
+	CPUCount             int32
+	DiskSizeMB           int32
+	MemoryMB             int32
+	InternetAccessPolicy InternetAccessPolicy
 }

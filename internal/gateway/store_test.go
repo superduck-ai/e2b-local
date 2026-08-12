@@ -10,20 +10,19 @@ import (
 func TestSandboxStoreKeepsRecordsInMemory(t *testing.T) {
 	store := NewSandboxStore()
 
-	allowInternet := true
 	createdAt := time.Now().UTC().Truncate(time.Second)
 	endAt := createdAt.Add(10 * time.Minute)
 
 	created, err := store.Create(SandboxRecord{
-		ID:                  "sbx_memory",
-		TemplateID:          "base",
-		Metadata:            map[string]string{"source": "test"},
-		EnvdVersion:         "99.99.99",
-		RuntimeInfo:         SandboxRuntimeInfo{SandboxID: "sbx_memory", EnvdURL: "http://10.0.0.11:49983", MachineID: "machine-a", VolumeMounts: []VolumeMount{{Name: "data", MountPath: "/data"}}},
-		CreatedAt:           createdAt,
-		EndAt:               endAt,
-		State:               string(e2bapi.Running),
-		AllowInternetAccess: &allowInternet,
+		ID:                   "sbx_memory",
+		TemplateID:           "base",
+		Metadata:             map[string]string{"source": "test"},
+		EnvdVersion:          "99.99.99",
+		RuntimeInfo:          SandboxRuntimeInfo{SandboxID: "sbx_memory", EnvdURL: "http://10.0.0.11:49983", MachineID: "machine-a", VolumeMounts: []VolumeMount{{Name: "data", MountPath: "/data"}}},
+		CreatedAt:            createdAt,
+		EndAt:                endAt,
+		State:                string(e2bapi.Running),
+		InternetAccessPolicy: InternetAccessAllowed,
 	})
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
@@ -41,6 +40,42 @@ func TestSandboxStoreKeepsRecordsInMemory(t *testing.T) {
 	}
 	if len(record.RuntimeInfo.VolumeMounts) != 1 || record.RuntimeInfo.VolumeMounts[0].MountPath != "/data" {
 		t.Fatalf("expected volume mounts to round-trip, got %#v", record.RuntimeInfo.VolumeMounts)
+	}
+}
+
+func TestSandboxStoreClonesRecordReferences(t *testing.T) {
+	store := NewSandboxStore()
+
+	created, err := store.Create(SandboxRecord{
+		ID:                   "sbx_clone",
+		Alias:                "original",
+		Metadata:             map[string]string{"source": "original"},
+		InternetAccessPolicy: InternetAccessAllowed,
+		RuntimeInfo: SandboxRuntimeInfo{
+			VolumeMounts:   []VolumeMount{{Name: "original"}},
+			PublishedPorts: []SandboxPortMapping{{HostPort: 8080}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+
+	created.Alias = "mutated result"
+	created.Metadata["source"] = "mutated result"
+	created.RuntimeInfo.VolumeMounts[0].Name = "mutated result"
+	created.RuntimeInfo.PublishedPorts[0].HostPort = 9090
+	created.InternetAccessPolicy = InternetAccessDenied
+
+	stored, ok := store.Get("sbx_clone")
+	if !ok {
+		t.Fatal("expected sandbox to be available")
+	}
+	if stored.Alias != "original" ||
+		stored.Metadata["source"] != "original" ||
+		stored.RuntimeInfo.VolumeMounts[0].Name != "original" ||
+		stored.RuntimeInfo.PublishedPorts[0].HostPort != 8080 ||
+		stored.InternetAccessPolicy != InternetAccessAllowed {
+		t.Fatalf("stored record was mutated through an external reference: %#v", stored)
 	}
 }
 

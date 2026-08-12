@@ -49,19 +49,19 @@ func TestDockerRuntimeContainerCommandStartsEnvdDirectly(t *testing.T) {
 	}
 }
 
-func TestDockerFUSEPermissionsStayDisabledWhenConfiguredOff(t *testing.T) {
-	capabilities, devices := dockerFUSEPermissions(false)
+func TestDockerSandboxPermissionsIncludePacketCaptureWithoutFUSE(t *testing.T) {
+	capabilities, devices := dockerSandboxPermissions(false)
 
-	if len(capabilities) != 0 || len(devices) != 0 {
-		t.Fatalf("expected no FUSE permissions when disabled, got capabilities=%#v devices=%#v", capabilities, devices)
+	if !reflect.DeepEqual(capabilities, []string{dockerPacketCaptureCapability}) || len(devices) != 0 {
+		t.Fatalf("expected only packet capture capability without FUSE, got capabilities=%#v devices=%#v", capabilities, devices)
 	}
 }
 
-func TestDockerFUSEPermissionsExposeDeviceAndMountCapability(t *testing.T) {
-	capabilities, devices := dockerFUSEPermissions(true)
+func TestDockerSandboxPermissionsIncludePacketCaptureAndFUSE(t *testing.T) {
+	capabilities, devices := dockerSandboxPermissions(true)
 
-	if !reflect.DeepEqual(capabilities, []string{dockerFUSECapability}) {
-		t.Fatalf("expected FUSE capability, got %#v", capabilities)
+	if !reflect.DeepEqual(capabilities, []string{dockerPacketCaptureCapability, dockerFUSECapability}) {
+		t.Fatalf("expected packet capture and FUSE capabilities, got %#v", capabilities)
 	}
 	if len(devices) != 1 {
 		t.Fatalf("expected one FUSE device mapping, got %#v", devices)
