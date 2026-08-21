@@ -36,11 +36,11 @@ func NewSandboxStore() *SandboxStore {
 // 在 Store 中不存在，或者加锁期间原条目被删除/替换，则返回 nil, false。
 //
 // 实现要点：
-//   1. 先用 Store 的读锁查出 id 对应的 entry。
-//   2. 释放 Store 读锁后，对该 entry 的 lifecycleMu 加锁（避免长时间阻塞其他沙箱）。
-//   3. 再次用 Store 读锁确认该 entry 仍是当前 id 指向的同一个对象，防止 ABA 问题：
-//      等待 lifecycleMu 期间，旧 entry 可能被删除，新 entry 可能复用同一 id 创建。
-//   4. 如果确认失败，解锁 lifecycleMu 并从头循环；成功则返回 entry, true。
+//  1. 先用 Store 的读锁查出 id 对应的 entry。
+//  2. 释放 Store 读锁后，对该 entry 的 lifecycleMu 加锁（避免长时间阻塞其他沙箱）。
+//  3. 再次用 Store 读锁确认该 entry 仍是当前 id 指向的同一个对象，防止 ABA 问题：
+//     等待 lifecycleMu 期间，旧 entry 可能被删除，新 entry 可能复用同一 id 创建。
+//  4. 如果确认失败，解锁 lifecycleMu 并从头循环；成功则返回 entry, true。
 //
 // 调用方获得 entry 后必须尽快完成操作并调用 entry.lifecycleMu.Unlock()，否则同沙箱的
 // 其他生命周期操作会被阻塞。
@@ -95,6 +95,12 @@ func (s *SandboxStore) Create(record SandboxRecord) (SandboxRecord, error) {
 		record.State = "running"
 	}
 
+	onTimeout, err := record.OnTimeout.Normalize()
+	if err != nil {
+		return SandboxRecord{}, err
+	}
+	record.OnTimeout = onTimeout
+
 	record = record.clone()
 	if record.EnvdURL == "" {
 		record.EnvdURL = record.RuntimeInfo.EnvdURL
@@ -117,18 +123,6 @@ func (s *SandboxStore) Upsert(record SandboxRecord) (SandboxRecord, error) {
 		return SandboxRecord{}, fmt.Errorf("sandbox id is required")
 	}
 
-	if record.CreatedAt.IsZero() {
-		record.CreatedAt = time.Now().UTC()
-	}
-
-	if record.EndAt.IsZero() {
-		record.EndAt = defaultSandboxEndAt(record.CreatedAt)
-	}
-
-	if record.State == "" {
-		record.State = "running"
-	}
-
 	record = record.clone()
 	if record.EnvdURL == "" {
 		record.EnvdURL = record.RuntimeInfo.EnvdURL
@@ -139,6 +133,24 @@ func (s *SandboxStore) Upsert(record SandboxRecord) (SandboxRecord, error) {
 	entry, exists := s.sandboxes[record.ID]
 	if exists {
 		record = mergeSandboxRecordForCache(entry.record, record)
+	} else {
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = time.Now().UTC()
+		}
+		if record.EndAt.IsZero() {
+			record.EndAt = defaultSandboxEndAt(record.CreatedAt)
+		}
+		if record.State == "" {
+			record.State = "running"
+		}
+	}
+	onTimeout, err := record.OnTimeout.Normalize()
+	if err != nil {
+		s.mu.Unlock()
+		return SandboxRecord{}, err
+	}
+	record.OnTimeout = onTimeout
+	if exists {
 		entry.record = record
 	} else {
 		entry = &sandboxEntry{record: record}
@@ -342,6 +354,9 @@ func mergeSandboxRecordForCache(cached SandboxRecord, incoming SandboxRecord) Sa
 	}
 	if record.InternetAccessPolicy == InternetAccessUnspecified {
 		record.InternetAccessPolicy = cached.InternetAccessPolicy
+	}
+	if record.OnTimeout == SandboxTimeoutActionUnspecified {
+		record.OnTimeout = cached.OnTimeout
 	}
 	return record.clone()
 }

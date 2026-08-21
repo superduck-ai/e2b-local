@@ -63,14 +63,17 @@ const (
 	appleEnvdHost      = "127.0.0.1"
 	appleInitSleepTime = "2147483647"
 
-	appleLocalManagedLabel                = "e2b.local.managed"
-	appleLocalImageLabel                  = "e2b.local.image"
-	appleLocalSandboxIDLabel              = "e2b.local.sandbox_id"
-	appleLocalSandboxTemplateIDLabel      = "e2b.local.template_id"
-	appleLocalSandboxCreatedAtLabel       = "e2b.local.created_at"
-	appleLocalSandboxEndAtLabel           = "e2b.local.end_at"
-	appleLocalSandboxMetadataLabel        = "e2b.local.metadata"
-	appleLocalSandboxAllowInternetLabel   = "e2b.local.allow_internet_access"
+	appleLocalManagedLabel              = "e2b.local.managed"
+	appleLocalImageLabel                = "e2b.local.image"
+	appleLocalSandboxIDLabel            = "e2b.local.sandbox_id"
+	appleLocalSandboxTemplateIDLabel    = "e2b.local.template_id"
+	appleLocalSandboxCreatedAtLabel     = "e2b.local.created_at"
+	appleLocalSandboxEndAtLabel         = "e2b.local.end_at"
+	appleLocalSandboxMetadataLabel      = "e2b.local.metadata"
+	appleLocalSandboxAllowInternetLabel = "e2b.local.allow_internet_access"
+	appleLocalSandboxOnTimeoutLabel     = "e2b.local.on_timeout"
+	// appleLocalSandboxAutoPauseLabel is read for compatibility with earlier metadata.
+	appleLocalSandboxAutoPauseLabel       = "e2b.local.auto_pause"
 	appleLocalSandboxVolumeMountsLabel    = "e2b.local.volume_mounts"
 	appleLocalSandboxEnvVarsLabel         = "e2b.local.env_vars"
 	appleLocalVolumeIDLabel               = "e2b.local.volume_id"
@@ -133,6 +136,12 @@ func (r *AppleContainerRuntime) Close() {
 }
 
 func (r *AppleContainerRuntime) CreateSandbox(ctx context.Context, req gateway.SandboxRuntimeCreateRequest) (gateway.SandboxRuntimeInfo, error) {
+	onTimeout, err := req.OnTimeout.Normalize()
+	if err != nil {
+		return gateway.SandboxRuntimeInfo{}, err
+	}
+	req.OnTimeout = onTimeout
+
 	releaseOperationLock, err := acquireAppleContainerOperationLock(ctx)
 	if err != nil {
 		return gateway.SandboxRuntimeInfo{}, fmt.Errorf("acquire apple container operation lock: %w", err)
@@ -568,6 +577,11 @@ func (r *AppleContainerRuntime) RestoreSandboxes(ctx context.Context) ([]gateway
 			endAt = createdAt.Add(time.Duration(gateway.DefaultSandboxTimeoutSeconds) * time.Second)
 		}
 
+		onTimeout, err := appleSandboxTimeoutAction(labels)
+		if err != nil {
+			return nil, fmt.Errorf("restore apple container sandbox %s: %w", sandboxID, err)
+		}
+
 		records = append(records, gateway.SandboxRecord{
 			ID:                   sandboxID,
 			TemplateID:           strings.TrimSpace(labels[appleLocalSandboxTemplateIDLabel]),
@@ -578,6 +592,7 @@ func (r *AppleContainerRuntime) RestoreSandboxes(ctx context.Context) ([]gateway
 			EndAt:                endAt,
 			State:                state,
 			InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(boolPtrFromLabel(labels[appleLocalSandboxAllowInternetLabel])),
+			OnTimeout:            onTimeout,
 		})
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -865,6 +880,11 @@ func appleSandboxLabels(req gateway.SandboxRuntimeCreateRequest, templateID stri
 	if req.AllowInternetAccess != nil {
 		labels[appleLocalSandboxAllowInternetLabel] = strconv.FormatBool(*req.AllowInternetAccess)
 	}
+	onTimeout, err := req.OnTimeout.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	labels[appleLocalSandboxOnTimeoutLabel] = string(onTimeout)
 	if len(mounts) > 0 {
 		data, err := json.Marshal(mounts)
 		if err != nil {
@@ -1152,6 +1172,14 @@ func boolPtrFromLabel(value string) *bool {
 		return nil
 	}
 	return &parsed
+}
+
+func appleSandboxTimeoutAction(labels map[string]string) (gateway.SandboxTimeoutAction, error) {
+	action := gateway.SandboxTimeoutAction(strings.TrimSpace(labels[appleLocalSandboxOnTimeoutLabel]))
+	if action == gateway.SandboxTimeoutActionUnspecified {
+		action = gateway.SandboxTimeoutActionFromAutoPause(boolPtrFromLabel(labels[appleLocalSandboxAutoPauseLabel]))
+	}
+	return action.Normalize()
 }
 
 func firstNonEmpty(values ...string) string {

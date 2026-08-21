@@ -345,6 +345,7 @@ In Docker runtime:
 - `POST /sandboxes` creates a container.
 - `DELETE /sandboxes/{sandboxID}` removes the container.
 - `pause` and `connect` map to Docker pause/unpause.
+- Sandboxes created with `autoPause: true` are paused instead of deleted when their timeout expires; an explicit `connect` resumes them and starts a new timeout window. The timeout policy is persisted across gateway restarts. Automatic resume on ordinary SDK or traffic requests is not supported.
 - envd listens on container port `49983`; Docker publishes a separate localhost host port for each sandbox automatically.
 - Templates are resolved from local tagged Docker images, or from a full image reference passed as `templateID`. The image must already exist locally.
 - The gateway stores non-sensitive runtime metadata in `e2b.local.*` container labels and restores running/paused sandboxes after process restart.

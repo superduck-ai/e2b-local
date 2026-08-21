@@ -2,6 +2,36 @@ package gateway
 
 import "testing"
 
+func TestSandboxTimeoutActionNormalization(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  SandboxTimeoutAction
+		want    SandboxTimeoutAction
+		wantErr bool
+		retains bool
+	}{
+		{name: "legacy default", action: SandboxTimeoutActionUnspecified, want: SandboxTimeoutActionKill},
+		{name: "kill", action: SandboxTimeoutActionKill, want: SandboxTimeoutActionKill},
+		{name: "pause", action: SandboxTimeoutActionPause, want: SandboxTimeoutActionPause, retains: true},
+		{name: "unknown", action: "hibernate", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.action.Normalize()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Normalize() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("Normalize() = %q, want %q", got, tt.want)
+			}
+			if got := tt.action.RetainsSandboxAfterTimeout(); got != tt.retains {
+				t.Fatalf("RetainsSandboxAfterTimeout() = %t, want %t", got, tt.retains)
+			}
+		})
+	}
+}
+
 func TestInternetAccessPolicyBoolConversion(t *testing.T) {
 	allowed := true
 	denied := false

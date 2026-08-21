@@ -1268,6 +1268,7 @@ func TestDockerSandboxLabelsRoundTripControlPlaneFields(t *testing.T) {
 		CreatedAt:           createdAt,
 		EndAt:               endAt,
 		AllowInternetAccess: &allowInternet,
+		OnTimeout:           gateway.SandboxTimeoutActionPause,
 	}, "base", "example/base:latest")
 
 	if labels[dockerLocalSandboxIDLabel] != "sbx_restore" || labels[dockerLocalSandboxTemplateIDLabel] != "base" {
@@ -1284,6 +1285,16 @@ func TestDockerSandboxLabelsRoundTripControlPlaneFields(t *testing.T) {
 	}
 	if got := dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel]); got == nil || *got {
 		t.Fatalf("expected allow internet false, got %#v", got)
+	}
+	if labels[dockerLocalSandboxOnTimeoutLabel] != string(gateway.SandboxTimeoutActionPause) {
+		t.Fatalf("expected on-timeout label to round trip, got %#v", labels)
+	}
+	if got, err := dockerSandboxTimeoutAction(labels); err != nil || got != gateway.SandboxTimeoutActionPause {
+		t.Fatalf("expected pause timeout action, got action=%q err=%v", got, err)
+	}
+	legacyLabels := map[string]string{dockerLocalSandboxAutoPauseLabel: "true"}
+	if got, err := dockerSandboxTimeoutAction(legacyLabels); err != nil || got != gateway.SandboxTimeoutActionPause {
+		t.Fatalf("expected legacy auto-pause label compatibility, got action=%q err=%v", got, err)
 	}
 	if got := dockerVolumeMountsFromLabels(labels); len(got) != 1 || got[0].Name != "data" || got[0].Path != "/mnt/data" {
 		t.Fatalf("expected volume mounts to round trip, got %#v", got)

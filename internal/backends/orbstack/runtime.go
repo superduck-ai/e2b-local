@@ -40,13 +40,23 @@ const (
 )
 
 type sandboxMetadata struct {
-	SandboxID           string            `json:"sandbox_id"`
-	TemplateID          string            `json:"template_id"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
-	CreatedAt           time.Time         `json:"created_at"`
-	EndAt               time.Time         `json:"end_at"`
-	AllowInternetAccess *bool             `json:"allow_internet_access,omitempty"`
-	VolumeMounts        []VolumeMount     `json:"volume_mounts,omitempty"`
+	SandboxID           string                       `json:"sandbox_id"`
+	TemplateID          string                       `json:"template_id"`
+	Metadata            map[string]string            `json:"metadata,omitempty"`
+	CreatedAt           time.Time                    `json:"created_at"`
+	EndAt               time.Time                    `json:"end_at"`
+	AllowInternetAccess *bool                        `json:"allow_internet_access,omitempty"`
+	OnTimeout           gateway.SandboxTimeoutAction `json:"on_timeout,omitempty"`
+	AutoPause           *bool                        `json:"auto_pause,omitempty"`
+	VolumeMounts        []VolumeMount                `json:"volume_mounts,omitempty"`
+}
+
+func (metadata sandboxMetadata) timeoutAction() (gateway.SandboxTimeoutAction, error) {
+	action := metadata.OnTimeout
+	if action == gateway.SandboxTimeoutActionUnspecified {
+		action = gateway.SandboxTimeoutActionFromAutoPause(metadata.AutoPause)
+	}
+	return action.Normalize()
 }
 
 type OrbstackRuntime struct {
@@ -94,6 +104,12 @@ func NewOrbstackRuntime(cfg OrbstackRuntimeConfig, logger *log.Logger) (*Orbstac
 }
 
 func (r *OrbstackRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCreateRequest) (SandboxRuntimeInfo, error) {
+	onTimeout, err := req.OnTimeout.Normalize()
+	if err != nil {
+		return SandboxRuntimeInfo{}, err
+	}
+	req.OnTimeout = onTimeout
+
 	templateVM, template, err := r.resolveTemplate(ctx, req.TemplateID)
 	if err != nil {
 		return SandboxRuntimeInfo{}, err
@@ -118,6 +134,7 @@ func (r *OrbstackRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeC
 		CreatedAt:           req.CreatedAt,
 		EndAt:               req.EndAt,
 		AllowInternetAccess: req.AllowInternetAccess,
+		OnTimeout:           req.OnTimeout,
 		VolumeMounts:        volumeMounts,
 	}
 
@@ -205,7 +222,29 @@ func (r *OrbstackRuntime) PauseSandbox(ctx context.Context, info SandboxRuntimeI
 	if name == "" {
 		return fmt.Errorf("machine is required")
 	}
-	return r.vmClient.StopVM(ctx, name)
+
+	inspection, err := r.InspectSandbox(ctx, info)
+	if err != nil {
+		return err
+	}
+	if !inspection.Exists {
+		return fmt.Errorf("%w: %s", ErrVMNotFound, name)
+	}
+	if inspection.State == string(e2bapi.Paused) {
+		return nil
+	}
+
+	if err := r.vmClient.StopVM(ctx, name); err != nil {
+		// The stop operation may have succeeded even if its response was lost, or
+		// another lifecycle actor may have stopped the VM concurrently. Confirm the
+		// desired state before surfacing an error so PauseSandbox remains idempotent.
+		if current, inspectErr := r.InspectSandbox(ctx, info); inspectErr == nil &&
+			current.Exists && current.State == string(e2bapi.Paused) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *OrbstackRuntime) ResumeSandbox(ctx context.Context, info SandboxRuntimeInfo) (SandboxRuntimeInfo, error) {
@@ -320,6 +359,10 @@ func (r *OrbstackRuntime) RestoreSandboxes(ctx context.Context) ([]SandboxRecord
 		}
 		volumeMounts := normalizeVolumeMounts(metadata.VolumeMounts)
 		runtimeInfo := r.runtimeInfo(sandboxID, vmInfo, volumeMounts)
+		onTimeout, err := metadata.timeoutAction()
+		if err != nil {
+			return nil, fmt.Errorf("restore orbstack sandbox %s: %w", sandboxID, err)
+		}
 
 		records = append(records, SandboxRecord{
 			ID:                   sandboxID,
@@ -331,6 +374,7 @@ func (r *OrbstackRuntime) RestoreSandboxes(ctx context.Context) ([]SandboxRecord
 			EndAt:                endAt,
 			State:                sandboxStateFromVMState(vmInfo.State),
 			InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(metadata.AllowInternetAccess),
+			OnTimeout:            onTimeout,
 		})
 	}
 

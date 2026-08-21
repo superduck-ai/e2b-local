@@ -29,6 +29,9 @@ func TestSandboxTimeoutDefaultIsConsistentAcrossLayers(t *testing.T) {
 	if !record.EndAt.Equal(expectedEndAt) {
 		t.Fatalf("expected store fallback EndAt %s, got %s", expectedEndAt, record.EndAt)
 	}
+	if record.OnTimeout != SandboxTimeoutActionKill {
+		t.Fatalf("expected omitted timeout action to default to kill, got %q", record.OnTimeout)
+	}
 
 	restored, err := (&App{}).enrichRestoredSandboxRecord(SandboxRecord{
 		ID:        "sbx_restored_default_timeout",
@@ -40,6 +43,9 @@ func TestSandboxTimeoutDefaultIsConsistentAcrossLayers(t *testing.T) {
 	}
 	if !restored.EndAt.Equal(expectedEndAt) {
 		t.Fatalf("expected restore fallback EndAt %s, got %s", expectedEndAt, restored.EndAt)
+	}
+	if restored.OnTimeout != SandboxTimeoutActionKill {
+		t.Fatalf("expected restored legacy timeout action to default to kill, got %q", restored.OnTimeout)
 	}
 
 	if got := recordEndAt(SandboxRecord{CreatedAt: createdAt}); !got.Equal(expectedEndAt) {

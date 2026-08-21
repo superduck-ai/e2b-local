@@ -10,7 +10,7 @@ import (
 
 const (
 	sandboxExpiryRetryDelay    = 5 * time.Second
-	sandboxExpiryDeleteTimeout = 30 * time.Second
+	sandboxExpiryActionTimeout = 30 * time.Second
 )
 
 // sandboxDeadlineManager owns the runtime timers used to actively expire
@@ -214,23 +214,22 @@ func (a *App) expireSandbox(sandboxID string, expectedEndAt time.Time) {
 	a.expireSandboxLocked(sandboxID, expectedEndAt)
 }
 
-// expireSandboxLocked 在生命周期锁保护下校验沙箱是否仍然过期，并执行 runtime 与 Store 删除。
+// expireSandboxLocked 在生命周期锁保护下校验沙箱是否仍然过期，并执行配置的过期动作。
 //
 // 调用方必须已经持有该沙箱的 lifecycleMu；本函数不会自行加锁。锁会覆盖状态
-// 检查、runtime 删除和 Store 删除，防止同一沙箱在删除过程中被 pause、续期或
-// 重复删除。其他沙箱使用各自的 lifecycleMu，因此不会被这里的慢速 I/O 阻塞。
+// 检查、runtime pause/delete 和 Store 更新，防止同一沙箱在过期过程中被 pause、
+// 续期或重复处理。其他沙箱使用各自的 lifecycleMu，因此不会被这里的慢速 I/O 阻塞。
 //
 // 函数先读取 Store 中的最新记录。记录不存在时会取消残留 timer。只有状态仍为
 // running、当前 EndAt 与 expectedEndAt 完全相同，并且当前时间已经到达 EndAt，
-// 才会继续删除。expectedEndAt 用来识别续期前启动的旧回调；状态和时间检查则
-// 避免删除已经暂停或尚未真正到期的沙箱。
+// 才会继续。expectedEndAt 用来识别续期前启动的旧回调；状态和时间检查则
+// 避免处理已经暂停或尚未真正到期的沙箱。
 //
-// runtime 删除使用独立的 30 秒超时，不受原请求 context 影响。删除策略为
-// required：runtime 删除失败时保留 Store 记录，记录日志，并在 5 秒后重试；
-// 删除成功后 deleteSandbox 会移除 Store 记录并取消 timer。如果 Store 中没有
-// 可删除记录，函数直接结束。
+// runtime 过期动作使用独立的 30 秒超时，不受原请求 context 影响。pause-on-timeout
+// 沙箱会暂停 runtime 并把 Store 状态设为 paused；kill-on-timeout 沙箱沿用 required 删除策略。
+// runtime 操作失败时保留 Store 记录，记录日志，并在 5 秒后重试。
 //
-// 该函数没有返回值。主要副作用是删除 runtime 沙箱和 Store 记录、取消 timer，
+// 该函数没有返回值。主要副作用是暂停或删除 runtime 沙箱、更新 Store、取消 timer，
 // 或在失败时写日志并安排重试。错误不会向调用方返回。
 //
 // 示例：
@@ -257,8 +256,42 @@ func (a *App) expireSandboxLocked(sandboxID string, expectedEndAt time.Time) {
 	}
 
 	// 使用独立且有上限的 context，避免 runtime 删除无限占用 lifecycleMu。
-	ctx, cancel := context.WithTimeout(context.Background(), sandboxExpiryDeleteTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxExpiryActionTimeout)
 	defer cancel()
+
+	switch record.OnTimeout {
+	case SandboxTimeoutActionPause:
+		_, ok, err := a.pauseSandboxLocked(ctx, record)
+		if err != nil {
+			a.logger.Printf("sandbox expiry pause failed sandbox_id=%s error=%v", sandboxID, err)
+			if inspector, supported := a.runtime.(SandboxRuntimeInspector); supported {
+				updated, exists, reconcileErr := a.reconcileSandboxRecordWithInspector(ctx, inspector, record)
+				switch {
+				case reconcileErr != nil:
+					a.logger.Printf("sandbox expiry pause reconcile failed sandbox_id=%s error=%v", sandboxID, reconcileErr)
+				case !exists:
+					return
+				case updated.State == string(e2bapi.Paused):
+					a.logger.Printf("sandbox expiry pause converged sandbox_id=%s action=pause", sandboxID)
+					return
+				}
+			}
+			a.scheduleExpiryRetry(sandboxID, expectedEndAt)
+			return
+		}
+		if !ok {
+			a.deadlines.cancel(sandboxID)
+			return
+		}
+		a.logger.Printf("sandbox expired sandbox_id=%s action=pause container_id=%s", sandboxID, record.RuntimeInfo.ContainerID)
+		return
+	case SandboxTimeoutActionKill:
+		// Continue with the required delete transition below.
+	default:
+		a.logger.Printf("sandbox expiry rejected invalid timeout action sandbox_id=%s action=%q", sandboxID, record.OnTimeout)
+		a.deadlines.cancel(sandboxID)
+		return
+	}
 
 	// required 策略要求 runtime 删除成功后才能移除 Store 记录。
 	result, err := a.deleteSandbox(ctx, record, sandboxRuntimeDeleteRequired)

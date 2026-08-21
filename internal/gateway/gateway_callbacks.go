@@ -420,6 +420,11 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 	if req.Timeout != nil && *req.Timeout < 0 {
 		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "timeout must be greater than or equal to 0")
 	}
+	onTimeout := SandboxTimeoutActionFromAutoPause(req.AutoPause)
+	autoResume := req.AutoResume != nil && req.AutoResume.Enabled
+	if autoResume {
+		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "autoResume is not supported; connect the paused sandbox explicitly")
+	}
 
 	if err := a.validateTemplateID(templateID); err != nil {
 		return SandboxRecord{}, gatewayError(http.StatusBadRequest, "%s", err.Error())
@@ -446,6 +451,7 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 		CreatedAt:           now,
 		EndAt:               endAt,
 		AllowInternetAccess: req.AllowInternetAccess,
+		OnTimeout:           onTimeout,
 	})
 	if err != nil {
 		if errors.Is(err, ErrRuntimeCapacity) {
@@ -464,6 +470,7 @@ func (a *App) defaultCreateSandbox(ctx context.Context, req e2bapi.NewSandbox) (
 		EndAt:                endAt,
 		State:                string(e2bapi.Running),
 		InternetAccessPolicy: InternetAccessPolicyFromBoolPtr(req.AllowInternetAccess),
+		OnTimeout:            onTimeout,
 	})
 	if err != nil {
 		if cleanupErr := a.runtime.DeleteSandbox(context.Background(), runtimeInfo); cleanupErr != nil {
@@ -552,12 +559,12 @@ func (a *App) activeSandboxRecord(ctx context.Context, sandboxID string) (Sandbo
 // activeSandboxRecordLocked 在调用方持有 lifecycleMu 时，确认沙箱仍可执行生命周期操作。
 //
 // 它会在锁内重新读取 Store，并通过 reconcileSandboxRecordLocked 检查截止时间和
-// runtime 真实状态。成功返回表示沙箱尚未过期、runtime 资源仍存在，并且返回记录
-// 已与 runtime 对齐。记录不存在、已经过期或 runtime 资源已消失时返回 404。
+// runtime 真实状态。成功返回表示沙箱仍可操作、runtime 资源仍存在，并且返回记录
+// 已与 runtime 对齐。记录不存在、不可恢复地过期或 runtime 资源已消失时返回 404。
 //
-// 发现过期时，请求只安排后台清理并返回 404，不会同步等待 runtime 删除；清理失败
-// 会保留记录并安排重试，但 connect、timeout、refresh 等操作仍不能延长已经到期的
-// EndAt。调用方必须已经持有该 sandbox 的 lifecycleMu；本函数不会重复加锁。
+// kill-on-timeout 沙箱过期时，请求只安排后台清理并返回 404，不会同步等待 runtime
+// 删除；pause-on-timeout 沙箱仍可由 connect、timeout、refresh 等操作续期。调用方必须已经
+// 持有该 sandbox 的 lifecycleMu；本函数不会重复加锁。
 func (a *App) activeSandboxRecordLocked(ctx context.Context, sandboxID string) (SandboxRecord, error) {
 	record, exists, err := a.reconcileSandboxRecordLocked(ctx, sandboxID)
 	if err != nil {
@@ -586,8 +593,8 @@ func (a *App) reconcileSandboxRecords(ctx context.Context, records []SandboxReco
 // reconcileSandboxRecord 在获取沙箱生命周期锁后，把 Store 记录与截止时间和 runtime 状态对齐。
 //
 // 返回的三个值分别是：对齐后的最新记录、该记录是否仍然存在、执行过程中是否出错。
-// 调用方通常先拿到一条 Store 记录，再调用本函数确认它仍然有效，避免把已经过期或
-// 已经被外部清理的沙箱返回给客户端。
+// 调用方通常先拿到一条 Store 记录，再调用本函数确认它仍然有效，避免把不可恢复地
+// 过期或已经被外部清理的沙箱返回给客户端。
 //
 // 本函数只负责获取 lifecycleMu，实际处理由 reconcileSandboxRecordLocked 完成。
 // 已经持有锁的生命周期接口必须直接调用 Locked 版本，避免重复获取非重入锁而死锁。
@@ -604,21 +611,22 @@ func (a *App) reconcileSandboxRecord(ctx context.Context, record SandboxRecord) 
 // reconcileSandboxRecordLocked 在生命周期锁内对齐沙箱的逻辑状态和 runtime 真实状态。
 //
 // 调用方必须已经持有该 sandbox 的 lifecycleMu。函数会重新读取最新 Store 记录，
-// 防止使用加锁前的旧快照。running 沙箱到达 EndAt 后会安排后台过期清理，并始终
-// 返回 exists=false；即使 runtime 删除失败并等待重试，也不会再暴露为可操作沙箱。
-// 未过期时，如果 runtime 支持 Inspect，则检查资源是否存在，并用真实 paused/running
-// 状态及连接信息修正 Store；runtime 资源已消失时会清理 Store 映射并返回不存在。
+// 防止使用加锁前的旧快照。kill-on-timeout 沙箱过期后会安排清理并返回不存在；
+// 会保留资源的超时策略使沙箱保持可操作，让临界时刻到达的 connect 能在旧 callback 执行前续期。
+// 如果 runtime 支持 Inspect，
+// 则检查资源是否存在，并用真实 paused/running 状态及连接信息修正 Store；runtime
+// 资源已消失时会清理 Store 映射并返回不存在。
 //
-// 成功时返回对齐后的记录和 exists=true。Store 记录不存在、沙箱已过期或 runtime
-// 资源不存在时返回 exists=false。Inspect 或 Store 更新失败时返回错误。副作用可能
-// 包括安排过期清理、删除失踪沙箱、更新 Store、同步 deadline timer。
+// 成功时返回对齐后的记录和 exists=true。Store 记录不存在、kill-on-timeout 沙箱
+// 已过期或 runtime 资源不存在时返回 exists=false。Inspect 或 Store 更新失败时返回
+// 错误。副作用可能包括安排过期清理、删除失踪沙箱、更新 Store、同步 deadline timer。
 func (a *App) reconcileSandboxRecordLocked(ctx context.Context, sandboxID string) (SandboxRecord, bool, error) {
 	current, ok := a.store.Get(sandboxID)
 	if !ok {
 		return SandboxRecord{}, false, nil
 	}
 
-	if sandboxRecordExpired(current, time.Now().UTC()) {
+	if sandboxRecordTerminallyExpired(current, time.Now().UTC()) {
 		// 请求路径只负责确认逻辑过期。复用或补建已经到期的 timer，让 callback
 		// 在本次请求释放 lifecycleMu 后执行物理删除；这样 runtime 卡住时不会
 		// 让 HTTP handler 忽略请求取消并同步等待最多 30 秒。
@@ -627,6 +635,9 @@ func (a *App) reconcileSandboxRecordLocked(ctx context.Context, sandboxID string
 		// 不能允许后续生命周期请求通过修改 EndAt 复活该沙箱。
 		return SandboxRecord{}, false, nil
 	}
+	// pause-on-timeout 沙箱到期后仍然是可恢复资源。deadline callback 会在没有新活动时
+	// 把它暂停；如果 connect 或 timeout 先取得 lifecycleMu，则允许该请求续期，
+	// callback 随后会因 EndAt 已变化而放弃旧的过期动作。
 
 	inspector, ok := a.runtime.(SandboxRuntimeInspector)
 	if !ok {
@@ -704,6 +715,12 @@ func sandboxRecordExpired(record SandboxRecord, now time.Time) bool {
 	return !endAt.IsZero() && !now.Before(endAt)
 }
 
+// sandboxRecordTerminallyExpired reports whether the timeout policy makes an expired
+// sandbox permanently unavailable. Policies such as pause retain a recoverable resource.
+func sandboxRecordTerminallyExpired(record SandboxRecord, now time.Time) bool {
+	return sandboxRecordExpired(record, now) && !record.OnTimeout.RetainsSandboxAfterTimeout()
+}
+
 func mergeSandboxRuntimeInfo(existing SandboxRuntimeInfo, update SandboxRuntimeInfo) SandboxRuntimeInfo {
 	if update.SandboxID == "" {
 		update.SandboxID = existing.SandboxID
@@ -774,21 +791,31 @@ func (a *App) defaultPauseSandbox(ctx context.Context, sandboxID string) (Sandbo
 		return SandboxRecord{}, gatewayError(http.StatusConflict, "sandbox %s is already paused", sandboxID)
 	}
 
-	if err := a.runtime.PauseSandbox(ctx, record.RuntimeInfo); err != nil {
-		return SandboxRecord{}, err
-	}
-
-	record, ok, err := a.store.SetState(sandboxID, string(e2bapi.Paused))
+	record, ok, err := a.pauseSandboxLocked(ctx, record)
 	if err != nil {
 		return SandboxRecord{}, err
 	}
 	if !ok {
 		return SandboxRecord{}, gatewayError(http.StatusNotFound, "sandbox %s not found", sandboxID)
 	}
-	a.syncSandboxDeadline(record)
-
 	a.logger.Printf("sandbox pause sandbox_id=%s action=mark_paused", record.ID)
 	return record, nil
+}
+
+// pauseSandboxLocked performs the shared runtime and Store transition to paused.
+// The caller must hold the sandbox lifecycle lock and is responsible for request-specific
+// validation, error mapping, logging, and retry policy.
+func (a *App) pauseSandboxLocked(ctx context.Context, record SandboxRecord) (SandboxRecord, bool, error) {
+	if err := a.runtime.PauseSandbox(ctx, record.RuntimeInfo); err != nil {
+		return SandboxRecord{}, true, err
+	}
+
+	paused, ok, err := a.store.SetState(record.ID, string(e2bapi.Paused))
+	if err != nil || !ok {
+		return SandboxRecord{}, ok, err
+	}
+	a.syncSandboxDeadline(paused)
+	return paused, true, nil
 }
 
 func (a *App) defaultResumeSandbox(ctx context.Context, sandboxID string, req e2bapi.ResumedSandbox) (SandboxRecord, error) {

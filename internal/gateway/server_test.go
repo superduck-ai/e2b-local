@@ -620,10 +620,26 @@ func TestCreateSandboxRejectsNegativeTimeout(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxRejectsUnsupportedAutoResume(t *testing.T) {
+	app := newTestApp(t, DefaultConfig())
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes",
+		bytes.NewBufferString(`{"templateID":"base","autoPause":true,"autoResume":{"enabled":true}}`),
+	)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unsupported lifecycle status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
 func TestGetSandboxDetail(t *testing.T) {
 	app := newTestApp(t, DefaultConfig())
 
-	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewBufferString(`{"templateID":"base","metadata":{"source":"detail"},"allow_internet_access":true}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewBufferString(`{"templateID":"base","metadata":{"source":"detail"},"allow_internet_access":true,"autoPause":true}`))
 	createRec := httptest.NewRecorder()
 
 	app.ServeHTTP(createRec, createReq)
@@ -661,6 +677,9 @@ func TestGetSandboxDetail(t *testing.T) {
 	}
 	if detail.AllowInternetAccess == nil || !*detail.AllowInternetAccess {
 		t.Fatalf("expected allowInternetAccess true, got %#v", detail.AllowInternetAccess)
+	}
+	if detail.Lifecycle == nil || detail.Lifecycle.OnTimeout != e2bapi.Pause || detail.Lifecycle.AutoResume {
+		t.Fatalf("expected explicit-connect pause lifecycle, got %#v", detail.Lifecycle)
 	}
 }
 

@@ -17,7 +17,9 @@ import (
 type deadlineRuntime struct {
 	recordingRuntime
 	deleted   chan SandboxRuntimeInfo
+	paused    chan SandboxRuntimeInfo
 	deleteErr error
+	pauseErr  error
 }
 
 type blockingDeleteRuntime struct {
@@ -67,6 +69,7 @@ func (r *blockingInspectRuntime) InspectSandbox(ctx context.Context, info Sandbo
 func newDeadlineRuntime() *deadlineRuntime {
 	return &deadlineRuntime{
 		deleted: make(chan SandboxRuntimeInfo, 8),
+		paused:  make(chan SandboxRuntimeInfo, 8),
 	}
 }
 
@@ -76,6 +79,15 @@ func (r *deadlineRuntime) DeleteSandbox(ctx context.Context, info SandboxRuntime
 	default:
 	}
 	return r.deleteErr
+}
+
+func (r *deadlineRuntime) PauseSandbox(ctx context.Context, info SandboxRuntimeInfo) error {
+	r.recordingRuntime.PauseSandbox(ctx, info)
+	select {
+	case r.paused <- info:
+	default:
+	}
+	return r.pauseErr
 }
 
 func newDeadlineTestApp(t *testing.T) (*App, *deadlineRuntime) {
@@ -193,6 +205,92 @@ func TestSandboxDeadlineActivelyDeletesAtEndAt(t *testing.T) {
 
 	if _, exists := app.store.Get(created.SandboxID); exists {
 		t.Fatal("expected expired sandbox to be removed from store")
+	}
+}
+
+func TestSandboxDeadlineAutoPausesAndExplicitConnectResumes(t *testing.T) {
+	app, runtime := newDeadlineTestApp(t)
+	createReq := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes",
+		bytes.NewBufferString(`{"templateID":"base","timeout":30,"autoPause":true}`),
+	)
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created SandboxResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	record, exists := app.store.Get(created.SandboxID)
+	if !exists || record.OnTimeout != SandboxTimeoutActionPause {
+		t.Fatalf("expected auto-pause lifecycle, got %#v", record)
+	}
+
+	setSandboxEndAtForTest(t, app, created.SandboxID, time.Now().UTC().Add(30*time.Millisecond))
+	select {
+	case paused := <-runtime.paused:
+		if paused.ContainerID != "ctr-"+created.SandboxID {
+			t.Fatalf("expected paused sandbox %q, got %#v", created.SandboxID, paused)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sandbox auto-pause")
+	}
+
+	connectReq := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes/"+created.SandboxID+"/connect",
+		bytes.NewBufferString(`{"timeout":30}`),
+	)
+	connectRec := httptest.NewRecorder()
+	app.ServeHTTP(connectRec, connectReq)
+	if connectRec.Code != http.StatusCreated {
+		t.Fatalf("expected resumed connect status %d, got %d: %s", http.StatusCreated, connectRec.Code, connectRec.Body.String())
+	}
+
+	record, exists = app.store.Get(created.SandboxID)
+	if !exists || record.State != string(e2bapi.Running) {
+		t.Fatalf("expected connected sandbox to be running, got %#v", record)
+	}
+	if len(runtime.resumeInfos) != 1 {
+		t.Fatalf("expected one runtime resume, got %d", len(runtime.resumeInfos))
+	}
+}
+
+func TestSandboxDeadlineAutoPauseFailureConvergesMissingRuntime(t *testing.T) {
+	app, runtime := newDeadlineTestApp(t)
+	createReq := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes",
+		bytes.NewBufferString(`{"templateID":"base","timeout":30,"autoPause":true}`),
+	)
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created SandboxResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	runtime.pauseErr = context.DeadlineExceeded
+	runtime.inspectResults = map[string]SandboxRuntimeInspection{
+		"ctr-" + created.SandboxID: {Exists: false},
+	}
+
+	setSandboxEndAtForTest(t, app, created.SandboxID, time.Now().UTC().Add(30*time.Millisecond))
+	select {
+	case <-runtime.paused:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed auto-pause attempt")
+	}
+	waitForSandboxRemovalForTest(t, app, created.SandboxID)
+	if _, exists := sandboxDeadlineForTest(app, created.SandboxID); exists {
+		t.Fatal("expected missing runtime reconciliation to cancel expiry retry")
 	}
 }
 
@@ -534,6 +632,52 @@ func TestLifecycleExtensionsRejectMissingRuntimeSandbox(t *testing.T) {
 				t.Fatal("expected missing runtime sandbox mapping to be removed")
 			}
 		})
+	}
+}
+
+func TestExpiredAutoPauseSandboxConnectRenewsBeforeDeadlineCallback(t *testing.T) {
+	app, runtime := newDeadlineTestApp(t)
+	createReq := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes",
+		bytes.NewBufferString(`{"templateID":"base","timeout":30,"autoPause":true}`),
+	)
+	createRec := httptest.NewRecorder()
+	app.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
+	}
+
+	var created SandboxResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	setSandboxEndAtWithoutReschedulingForTest(t, app, created.SandboxID, time.Now().UTC().Add(-time.Second))
+
+	before := time.Now().UTC()
+	connectReq := httptest.NewRequest(
+		http.MethodPost,
+		"/sandboxes/"+created.SandboxID+"/connect",
+		bytes.NewBufferString(`{"timeout":30}`),
+	)
+	connectRec := httptest.NewRecorder()
+	app.ServeHTTP(connectRec, connectReq)
+	after := time.Now().UTC()
+	if connectRec.Code != http.StatusOK {
+		t.Fatalf("expected expired auto-pause connect status %d, got %d: %s", http.StatusOK, connectRec.Code, connectRec.Body.String())
+	}
+
+	record, exists := app.store.Get(created.SandboxID)
+	if !exists || record.State != string(e2bapi.Running) {
+		t.Fatalf("expected renewed running sandbox, exists=%t record=%#v", exists, record)
+	}
+	minEndAt := before.Add(29 * time.Second)
+	maxEndAt := after.Add(31 * time.Second)
+	if record.EndAt.Before(minEndAt) || record.EndAt.After(maxEndAt) {
+		t.Fatalf("expected renewed deadline between %s and %s, got %s", minEndAt, maxEndAt, record.EndAt)
+	}
+	if len(runtime.pauseInfos) != 0 || len(runtime.resumeInfos) != 0 || len(runtime.deleteInfos) != 0 {
+		t.Fatalf("expected connect to renew before expiry action, runtime=%#v", runtime.recordingRuntime)
 	}
 }
 

@@ -90,7 +90,8 @@ func TestSandboxStoreUpsertMergesCachedRecordFields(t *testing.T) {
 			EnvdURL:   "http://10.0.0.11:49983",
 			MachineID: "machine-a",
 		},
-		State: string(e2bapi.Running),
+		State:     string(e2bapi.Running),
+		OnTimeout: SandboxTimeoutActionPause,
 	}); err != nil {
 		t.Fatalf("seed sandbox: %v", err)
 	}
@@ -110,5 +111,19 @@ func TestSandboxStoreUpsertMergesCachedRecordFields(t *testing.T) {
 	}
 	if updated.State != string(e2bapi.Paused) {
 		t.Fatalf("expected updated state to win, got %q", updated.State)
+	}
+	if updated.OnTimeout != SandboxTimeoutActionPause {
+		t.Fatalf("expected omitted timeout action to preserve cached pause, got %q", updated.OnTimeout)
+	}
+
+	updated, err = store.Upsert(SandboxRecord{
+		ID:        "sbx_cache",
+		OnTimeout: SandboxTimeoutActionKill,
+	})
+	if err != nil {
+		t.Fatalf("upsert explicit timeout action: %v", err)
+	}
+	if updated.OnTimeout != SandboxTimeoutActionKill {
+		t.Fatalf("expected explicit kill timeout action to win, got %q", updated.OnTimeout)
 	}
 }

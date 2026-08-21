@@ -206,6 +206,11 @@ func (a *App) enrichRestoredSandboxRecord(record SandboxRecord) (SandboxRecord, 
 	if strings.TrimSpace(record.State) == "" {
 		record.State = string(e2bapi.Running)
 	}
+	onTimeout, err := record.OnTimeout.Normalize()
+	if err != nil {
+		return SandboxRecord{}, fmt.Errorf("restore sandbox %s: %w", record.ID, err)
+	}
+	record.OnTimeout = onTimeout
 	return record, nil
 }
 

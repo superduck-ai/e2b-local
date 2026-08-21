@@ -79,16 +79,19 @@ const (
 	dockerLocalSandboxEndAtLabel          = "e2b.local.sandbox.end_at"
 	dockerLocalSandboxMetadataLabel       = "e2b.local.sandbox.metadata"
 	dockerLocalSandboxAllowInternetLabel  = "e2b.local.sandbox.allow_internet_access"
-	dockerLocalSandboxVolumeMountsLabel   = "e2b.local.sandbox.volume_mounts"
-	dockerLocalVolumeMetadataFile         = ".e2b-local-volume.json"
-	dockerLocalTemplateLabel              = "e2b.local.template"
-	dockerLocalTemplateIDLabel            = "e2b.local.template_id"
-	dockerLocalTemplateNamesLabel         = "e2b.local.template.names"
-	dockerLocalTemplateBuildIDLabel       = "e2b.local.template.build_id"
-	dockerLocalTemplateCPUCountLabel      = "e2b.local.template.cpu_count"
-	dockerLocalTemplateMemoryMBLabel      = "e2b.local.template.memory_mb"
-	dockerLocalTemplateStartCmdLabel      = "e2b.local.template.start_cmd"
-	dockerLocalTemplateReadyCmdLabel      = "e2b.local.template.ready_cmd"
+	dockerLocalSandboxOnTimeoutLabel      = "e2b.local.sandbox.on_timeout"
+	// dockerLocalSandboxAutoPauseLabel is read for compatibility with earlier metadata.
+	dockerLocalSandboxAutoPauseLabel    = "e2b.local.sandbox.auto_pause"
+	dockerLocalSandboxVolumeMountsLabel = "e2b.local.sandbox.volume_mounts"
+	dockerLocalVolumeMetadataFile       = ".e2b-local-volume.json"
+	dockerLocalTemplateLabel            = "e2b.local.template"
+	dockerLocalTemplateIDLabel          = "e2b.local.template_id"
+	dockerLocalTemplateNamesLabel       = "e2b.local.template.names"
+	dockerLocalTemplateBuildIDLabel     = "e2b.local.template.build_id"
+	dockerLocalTemplateCPUCountLabel    = "e2b.local.template.cpu_count"
+	dockerLocalTemplateMemoryMBLabel    = "e2b.local.template.memory_mb"
+	dockerLocalTemplateStartCmdLabel    = "e2b.local.template.start_cmd"
+	dockerLocalTemplateReadyCmdLabel    = "e2b.local.template.ready_cmd"
 )
 
 type DockerRuntime struct {
@@ -202,6 +205,12 @@ func dockerHostSupportsLocalBindMounts(host string) bool {
 }
 
 func (r *DockerRuntime) CreateSandbox(ctx context.Context, req SandboxRuntimeCreateRequest) (SandboxRuntimeInfo, error) {
+	onTimeout, err := req.OnTimeout.Normalize()
+	if err != nil {
+		return SandboxRuntimeInfo{}, err
+	}
+	req.OnTimeout = onTimeout
+
 	templateID := strings.TrimSpace(req.TemplateID)
 	if templateID == "" {
 		return SandboxRuntimeInfo{}, fmt.Errorf("templateID is required")
@@ -519,6 +528,11 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 		templateID = dockerTemplateName(summary.Image)
 	}
 
+	onTimeout, err := dockerSandboxTimeoutAction(labels)
+	if err != nil {
+		return SandboxRecord{}, false, fmt.Errorf("restore docker sandbox %s: %w", sandboxID, err)
+	}
+
 	return SandboxRecord{
 		ID:                   sandboxID,
 		TemplateID:           templateID,
@@ -529,6 +543,7 @@ func (r *DockerRuntime) restoreSandboxRecord(ctx context.Context, summary docker
 		EndAt:                endAt,
 		State:                state,
 		InternetAccessPolicy: gateway.InternetAccessPolicyFromBoolPtr(dockerBoolPtrLabel(labels[dockerLocalSandboxAllowInternetLabel])),
+		OnTimeout:            onTimeout,
 	}, true, nil
 }
 
@@ -1281,6 +1296,10 @@ func dockerSandboxLabels(req SandboxRuntimeCreateRequest, templateID string, ima
 	if req.AllowInternetAccess != nil {
 		labels[dockerLocalSandboxAllowInternetLabel] = strconv.FormatBool(*req.AllowInternetAccess)
 	}
+	onTimeout, err := req.OnTimeout.Normalize()
+	if err == nil {
+		labels[dockerLocalSandboxOnTimeoutLabel] = string(onTimeout)
+	}
 	for key, value := range labels {
 		if strings.TrimSpace(value) == "" {
 			delete(labels, key)
@@ -1344,6 +1363,14 @@ func dockerBoolPtrLabel(value string) *bool {
 		return nil
 	}
 	return &parsed
+}
+
+func dockerSandboxTimeoutAction(labels map[string]string) (gateway.SandboxTimeoutAction, error) {
+	action := gateway.SandboxTimeoutAction(strings.TrimSpace(labels[dockerLocalSandboxOnTimeoutLabel]))
+	if action == gateway.SandboxTimeoutActionUnspecified {
+		action = gateway.SandboxTimeoutActionFromAutoPause(dockerBoolPtrLabel(labels[dockerLocalSandboxAutoPauseLabel]))
+	}
+	return action.Normalize()
 }
 
 func dockerVolumeMountsFromLabels(labels map[string]string) []VolumeMount {
