@@ -297,6 +297,7 @@ Docker runtime 下：
 - `POST /sandboxes` 会创建容器。
 - `DELETE /sandboxes/{sandboxID}` 会删除容器。
 - `pause` 和 `connect` 对应 Docker pause/unpause。
+- 使用 `autoPause: true` 创建的 sandbox 在 timeout 到期后会暂停而不是删除；后续显式 `connect` 会恢复 sandbox 并开始新的 timeout 窗口。timeout 策略会在 gateway 重启后保留；普通 SDK 请求或流量触发的自动恢复暂不支持。
 - envd 在容器内固定监听 `49983`；Docker 会自动为每个 sandbox 分配独立的 localhost host port。
 - Template 会从本机已有 tag 的 Docker images 解析，也可以在 `templateID` 中直接传完整 image reference；对应镜像必须已经存在本机。
 - gateway 会把非敏感 runtime metadata 写入 `e2b.local.*` container label，进程重启后可恢复 running/paused sandbox。

@@ -1,6 +1,9 @@
 package gateway
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type NewSandboxRequest struct {
 	TemplateID          string            `json:"templateID"`
@@ -116,6 +119,41 @@ func (policy InternetAccessPolicy) BoolPtr() *bool {
 	}
 }
 
+// SandboxTimeoutAction describes the action taken when a running sandbox reaches EndAt.
+// The unspecified value is reserved for partial updates and legacy persisted records.
+type SandboxTimeoutAction string
+
+const (
+	SandboxTimeoutActionUnspecified SandboxTimeoutAction = ""
+	SandboxTimeoutActionKill        SandboxTimeoutAction = "kill"
+	SandboxTimeoutActionPause       SandboxTimeoutAction = "pause"
+)
+
+func SandboxTimeoutActionFromAutoPause(autoPause *bool) SandboxTimeoutAction {
+	if autoPause != nil && *autoPause {
+		return SandboxTimeoutActionPause
+	}
+	return SandboxTimeoutActionKill
+}
+
+// Normalize applies the backward-compatible default and rejects unknown actions.
+func (action SandboxTimeoutAction) Normalize() (SandboxTimeoutAction, error) {
+	switch action {
+	case SandboxTimeoutActionUnspecified, SandboxTimeoutActionKill:
+		return SandboxTimeoutActionKill, nil
+	case SandboxTimeoutActionPause:
+		return SandboxTimeoutActionPause, nil
+	default:
+		return SandboxTimeoutActionUnspecified, fmt.Errorf("unsupported sandbox timeout action %q", action)
+	}
+}
+
+// RetainsSandboxAfterTimeout reports whether timeout is a recoverable lifecycle transition.
+func (action SandboxTimeoutAction) RetainsSandboxAfterTimeout() bool {
+	normalized, err := action.Normalize()
+	return err == nil && normalized == SandboxTimeoutActionPause
+}
+
 type SandboxRecord struct {
 	ID                   string
 	TemplateID           string
@@ -132,4 +170,5 @@ type SandboxRecord struct {
 	DiskSizeMB           int32
 	MemoryMB             int32
 	InternetAccessPolicy InternetAccessPolicy
+	OnTimeout            SandboxTimeoutAction
 }

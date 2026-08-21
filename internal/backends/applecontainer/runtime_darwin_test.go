@@ -648,6 +648,7 @@ func TestAppleContainerRuntimeRestoreSandboxesMapsMetadataAndPausedState(t *test
 		CreatedAt:           created,
 		EndAt:               end,
 		AllowInternetAccess: &allow,
+		OnTimeout:           gateway.SandboxTimeoutActionPause,
 	}, "ubuntu-2404", "docker.io/library/ubuntu:24.04", []gateway.VolumeMount{{Name: "data", VolumeID: "vol-1", MountPath: "/data"}})
 	if err != nil {
 		t.Fatalf("labels: %v", err)
@@ -687,8 +688,23 @@ func TestAppleContainerRuntimeRestoreSandboxesMapsMetadataAndPausedState(t *test
 	if record.InternetAccessPolicy != gateway.InternetAccessDenied {
 		t.Fatalf("expected allow-internet=false, got %q", record.InternetAccessPolicy)
 	}
+	if record.OnTimeout != gateway.SandboxTimeoutActionPause {
+		t.Fatalf("expected auto-pause policy to restore, got %#v", record)
+	}
 	if len(record.RuntimeInfo.VolumeMounts) != 1 || record.RuntimeInfo.VolumeMounts[0].MountPath != "/data" {
 		t.Fatalf("expected volume mounts to restore, got %#v", record.RuntimeInfo.VolumeMounts)
+	}
+}
+
+func TestAppleSandboxTimeoutActionReadsLegacyAutoPauseLabel(t *testing.T) {
+	action, err := appleSandboxTimeoutAction(map[string]string{
+		appleLocalSandboxAutoPauseLabel: "true",
+	})
+	if err != nil {
+		t.Fatalf("legacy timeout action: %v", err)
+	}
+	if action != gateway.SandboxTimeoutActionPause {
+		t.Fatalf("expected legacy auto-pause label to map to pause, got %q", action)
 	}
 }
 

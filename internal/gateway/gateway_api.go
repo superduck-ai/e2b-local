@@ -725,6 +725,10 @@ func (a *App) apiSandboxDetailResponse(record SandboxRecord) e2bapi.SandboxDetai
 	if endAt.IsZero() {
 		endAt = defaultSandboxEndAt(record.CreatedAt)
 	}
+	onTimeout := e2bapi.Kill
+	if normalized, err := record.OnTimeout.Normalize(); err == nil {
+		onTimeout = e2bapi.SandboxOnTimeout(normalized)
+	}
 
 	return e2bapi.SandboxDetail{
 		Alias:               optionalString(record.Alias),
@@ -737,7 +741,7 @@ func (a *App) apiSandboxDetailResponse(record SandboxRecord) e2bapi.SandboxDetai
 		EnvdVersion:         sandboxEnvdVersion(record),
 		Lifecycle: &e2bapi.SandboxLifecycle{
 			AutoResume: false,
-			OnTimeout:  e2bapi.Kill,
+			OnTimeout:  onTimeout,
 		},
 		MemoryMB:     sandboxMemoryMB(record),
 		Metadata:     metadata,

@@ -16,6 +16,7 @@ type SandboxRuntime interface {
 	CreateSandbox(ctx context.Context, req SandboxRuntimeCreateRequest) (SandboxRuntimeInfo, error)
 	ListTemplates(ctx context.Context) ([]SandboxRuntimeTemplate, error)
 	DeleteSandbox(ctx context.Context, info SandboxRuntimeInfo) error
+	// PauseSandbox is an idempotent transition: an already-paused sandbox is success.
 	PauseSandbox(ctx context.Context, info SandboxRuntimeInfo) error
 	ResumeSandbox(ctx context.Context, info SandboxRuntimeInfo) (SandboxRuntimeInfo, error)
 }
@@ -29,6 +30,7 @@ type SandboxRuntimeCreateRequest struct {
 	CreatedAt           time.Time
 	EndAt               time.Time
 	AllowInternetAccess *bool
+	OnTimeout           SandboxTimeoutAction
 }
 
 type SandboxRuntimeInfo struct {

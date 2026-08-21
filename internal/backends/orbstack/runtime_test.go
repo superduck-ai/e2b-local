@@ -74,6 +74,7 @@ type fakeVMClient struct {
 	listVMs               []VMInfo
 	readFiles             map[string][]byte
 	events                []string
+	stopFunc              func(name string) error
 }
 
 func (f *fakeVMClient) DeleteVM(ctx context.Context, name string) error {
@@ -91,7 +92,57 @@ func (f *fakeVMClient) StartVM(ctx context.Context, name string) error {
 func (f *fakeVMClient) StopVM(ctx context.Context, name string) error {
 	f.stopCalls = append(f.stopCalls, name)
 	f.events = append(f.events, "stop:"+name)
+	if f.stopFunc != nil {
+		return f.stopFunc(name)
+	}
 	return nil
+}
+
+func TestOrbstackRuntimePauseSandboxIsIdempotent(t *testing.T) {
+	t.Run("already stopped", func(t *testing.T) {
+		client := &fakeVMClient{infos: map[string]VMInfo{
+			"sandbox-1": {Name: "sandbox-1", State: "stopped"},
+		}}
+		runtime := &OrbstackRuntime{vmClient: client}
+
+		if err := runtime.PauseSandbox(context.Background(), SandboxRuntimeInfo{MachineID: "sandbox-1"}); err != nil {
+			t.Fatalf("pause stopped sandbox: %v", err)
+		}
+		if len(client.stopCalls) != 0 {
+			t.Fatalf("expected no stop RPC for stopped VM, got %#v", client.stopCalls)
+		}
+	})
+
+	t.Run("stop response lost after state transition", func(t *testing.T) {
+		client := &fakeVMClient{infos: map[string]VMInfo{
+			"sandbox-1": {Name: "sandbox-1", State: "running"},
+		}}
+		client.stopFunc = func(name string) error {
+			info := client.infos[name]
+			info.State = "stopped"
+			client.infos[name] = info
+			return context.DeadlineExceeded
+		}
+		runtime := &OrbstackRuntime{vmClient: client}
+
+		if err := runtime.PauseSandbox(context.Background(), SandboxRuntimeInfo{MachineID: "sandbox-1"}); err != nil {
+			t.Fatalf("pause sandbox after ambiguous stop result: %v", err)
+		}
+		if len(client.stopCalls) != 1 {
+			t.Fatalf("expected one stop RPC, got %#v", client.stopCalls)
+		}
+	})
+}
+
+func TestOrbstackSandboxMetadataReadsLegacyAutoPause(t *testing.T) {
+	autoPause := true
+	action, err := (sandboxMetadata{AutoPause: &autoPause}).timeoutAction()
+	if err != nil {
+		t.Fatalf("legacy timeout action: %v", err)
+	}
+	if action != gateway.SandboxTimeoutActionPause {
+		t.Fatalf("expected legacy auto-pause metadata to map to pause, got %q", action)
+	}
 }
 
 func (f *fakeVMClient) GetVMInfo(ctx context.Context, name string) (VMInfo, error) {
@@ -536,6 +587,7 @@ func TestOrbstackRuntimeRestoreSandboxesReadsMetadata(t *testing.T) {
 		Metadata:   map[string]string{"owner": "restore"},
 		CreatedAt:  now,
 		EndAt:      now.Add(5 * time.Minute),
+		OnTimeout:  gateway.SandboxTimeoutActionPause,
 		VolumeMounts: []VolumeMount{
 			{VolumeID: "vol-1", Path: "/data"},
 		},
@@ -597,6 +649,9 @@ func TestOrbstackRuntimeRestoreSandboxesReadsMetadata(t *testing.T) {
 	}
 	if len(record.RuntimeInfo.VolumeMounts) != 1 || record.RuntimeInfo.VolumeMounts[0].MountPath != "/data" {
 		t.Fatalf("expected restored volume mounts, got %#v", record.RuntimeInfo.VolumeMounts)
+	}
+	if record.OnTimeout != gateway.SandboxTimeoutActionPause {
+		t.Fatalf("expected restored auto-pause policy, got %#v", record)
 	}
 }
 
