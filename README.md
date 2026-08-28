@@ -475,3 +475,4 @@ go test -tags=go_sdk_integration ./tests/sdk_integration -run TestGoSDKGatewayAp
 ```
 
 Most SDK integration tests read `config.yaml` through `LoadConfig("config.yaml")` and skip when Docker, envd, Node, or SDK dependencies are unavailable. `TestGoSDKGatewayAppleContainerDirectEnvd` builds its own Apple Container config and skips unless `container-apiserver`, the configured envd binary, and the template image are available.
+
